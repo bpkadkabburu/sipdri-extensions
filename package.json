@@ -1,0 +1,15 @@
+{
+  "name": "sipdri-extensions",
+  "version": "1.0.0",
+  "description": "SIPD-RI Login Automation with CAPTCHA solver",
+  "main": "login.js",
+  "scripts": {
+    "login": "node login.js"
+  },
+  "license": "MIT",
+  "dependencies": {
+    "@google/generative-ai": "^0.24.1",
+    "dotenv": "^16.4.7",
+    "puppeteer": "^24.4.0"
+  }
+}
