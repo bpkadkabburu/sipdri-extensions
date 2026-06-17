@@ -1,0 +1,79 @@
+<!DOCTYPE html>
+<html lang="id">
+<head>
+    <meta charset="UTF-8">
+    <title>Pengaturan — SIPD-RI Sub Kegiatan</title>
+    <style>
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+        body {
+            max-width: 420px;
+            margin: 40px auto;
+            padding: 0 24px 60px;
+            font-family: 'Segoe UI', Tahoma, sans-serif;
+            background: #f1f5f9;
+            color: #1e293b;
+        }
+        h1 { font-size: 20px; font-weight: 700; color: #1e3a5f; margin-bottom: 6px; }
+        .subtitle { font-size: 13px; color: #64748b; margin-bottom: 28px; }
+        .section {
+            background: white;
+            border-radius: 10px;
+            padding: 20px;
+            margin-bottom: 16px;
+            box-shadow: 0 1px 3px rgba(0,0,0,0.08);
+        }
+        .section-title {
+            font-size: 12px;
+            font-weight: 700;
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
+            color: #94a3b8;
+            margin-bottom: 14px;
+        }
+        label { display: block; font-size: 13px; font-weight: 600; color: #475569; margin-bottom: 5px; }
+        input {
+            width: 100%;
+            padding: 9px 12px;
+            border: 1px solid #e2e8f0;
+            border-radius: 7px;
+            font-size: 14px;
+            margin-bottom: 14px;
+            background: #f8fafc;
+        }
+        input:last-of-type { margin-bottom: 0; }
+        input:focus { outline: none; border-color: #3b82f6; background: white; box-shadow: 0 0 0 3px rgba(59,130,246,0.12); }
+        .hint { font-size: 11px; color: #94a3b8; margin-top: -10px; margin-bottom: 14px; }
+        .btn-save {
+            width: 100%;
+            padding: 12px;
+            background: #3b82f6;
+            color: white;
+            border: none;
+            border-radius: 8px;
+            font-size: 14px;
+            font-weight: 700;
+            cursor: pointer;
+        }
+        .btn-save:hover { background: #2563eb; }
+        .saved-msg { text-align: center; color: #16a34a; font-size: 13px; font-weight: 600; margin-top: 10px; height: 20px; }
+    </style>
+</head>
+<body>
+    <h1>Pengaturan Default</h1>
+    <p class="subtitle">Nilai ini akan otomatis terisi saat popup dibuka</p>
+
+    <div class="section">
+        <div class="section-title">Parameter Default</div>
+        <label>ID Daerah</label>
+        <input type="number" id="idDaerah" placeholder="cth: 388">
+        <p class="hint">ID daerah sesuai data SIPD-RI (lihat URL atau request network)</p>
+        <label>Tahun Anggaran</label>
+        <input type="number" id="tahun" placeholder="cth: 2026">
+    </div>
+
+    <button class="btn-save" id="save-btn">Simpan</button>
+    <div class="saved-msg" id="saved-msg"></div>
+
+    <script src="options.js"></script>
+</body>
+</html>

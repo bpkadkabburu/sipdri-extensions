@@ -1,5 +1,4 @@
 node_modules/
 .env
-cookies.json
-screenshots/
-*.png
+*.zip
+sipdri-extension.zip

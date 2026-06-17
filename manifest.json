@@ -1,0 +1,28 @@
+{
+  "manifest_version": 3,
+  "name": "SIPD-RI Sub Kegiatan",
+  "version": "1.0.0",
+  "description": "Ambil dan ekspor data sub kegiatan dari SIPD-RI",
+  "permissions": ["storage", "webRequest", "scripting"],
+  "host_permissions": [
+    "https://sipd-ri.kemendagri.go.id/*"
+  ],
+  "background": {
+    "service_worker": "src/background/service-worker.js"
+  },
+  "content_scripts": [
+    {
+      "matches": ["https://sipd-ri.kemendagri.go.id/*"],
+      "js": ["lib/xlsx.mini.min.js", "src/content/content.js"],
+      "run_at": "document_idle"
+    }
+  ],
+  "action": {
+    "default_popup": "popup/popup.html",
+    "default_title": "SIPD-RI Sub Kegiatan"
+  },
+  "options_ui": {
+    "page": "options/options.html",
+    "open_in_tab": true
+  }
+}
