@@ -12,7 +12,7 @@
         }
 
         body {
-            max-width: 420px;
+            max-width: 480px;
             margin: 40px auto;
             padding: 0 24px 60px;
             font-family: 'Segoe UI', Tahoma, sans-serif;
@@ -50,6 +50,14 @@
             margin-bottom: 14px;
         }
 
+        .section-desc {
+            font-size: 12px;
+            color: #94a3b8;
+            margin-top: -8px;
+            margin-bottom: 16px;
+            line-height: 1.5;
+        }
+
         label {
             display: block;
             font-size: 13px;
@@ -67,6 +75,7 @@
             font-size: 14px;
             margin-bottom: 14px;
             background: #f8fafc;
+            transition: border-color 0.2s, box-shadow 0.2s;
         }
 
         input:last-of-type,
@@ -99,6 +108,7 @@
             font-size: 14px;
             font-weight: 700;
             cursor: pointer;
+            transition: background 0.2s;
         }
 
         .btn-save:hover {
@@ -112,6 +122,140 @@
             font-weight: 600;
             margin-top: 10px;
             height: 20px;
+        }
+
+        /* ===== ATURAN SUMBER DANA ===== */
+        #rules-container {
+            display: flex;
+            flex-direction: column;
+            gap: 10px;
+        }
+
+        .rule-row {
+            display: flex;
+            gap: 8px;
+            align-items: flex-start;
+            padding: 12px;
+            background: #f8fafc;
+            border: 1px solid #e2e8f0;
+            border-radius: 8px;
+            position: relative;
+            animation: ruleSlideIn 0.25s ease-out;
+        }
+
+        @keyframes ruleSlideIn {
+            from {
+                opacity: 0;
+                transform: translateY(-8px);
+            }
+            to {
+                opacity: 1;
+                transform: translateY(0);
+            }
+        }
+
+        .rule-row .rule-fields {
+            flex: 1;
+            display: flex;
+            flex-direction: column;
+            gap: 6px;
+        }
+
+        .rule-row .rule-field-group {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+
+        .rule-row .rule-label {
+            font-size: 11px;
+            font-weight: 700;
+            text-transform: uppercase;
+            letter-spacing: 0.04em;
+            color: #94a3b8;
+            min-width: 42px;
+            flex-shrink: 0;
+        }
+
+        .rule-row .rule-label.search {
+            color: #f59e0b;
+        }
+
+        .rule-row .rule-label.replace {
+            color: #22c55e;
+        }
+
+        .rule-row input {
+            flex: 1;
+            margin-bottom: 0;
+            font-size: 13px;
+            padding: 7px 10px;
+        }
+
+        .rule-row .rule-arrow {
+            color: #cbd5e1;
+            font-size: 16px;
+            display: flex;
+            align-items: center;
+            padding-top: 2px;
+        }
+
+        .btn-remove-rule {
+            width: 32px;
+            height: 32px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            background: none;
+            border: 1px solid #fecaca;
+            border-radius: 6px;
+            color: #ef4444;
+            font-size: 16px;
+            cursor: pointer;
+            flex-shrink: 0;
+            margin-top: 8px;
+            transition: background 0.15s, border-color 0.15s;
+        }
+
+        .btn-remove-rule:hover {
+            background: #fef2f2;
+            border-color: #ef4444;
+        }
+
+        .btn-add-rule {
+            width: 100%;
+            padding: 10px;
+            background: #f0f9ff;
+            color: #3b82f6;
+            border: 2px dashed #93c5fd;
+            border-radius: 8px;
+            font-size: 13px;
+            font-weight: 600;
+            cursor: pointer;
+            margin-top: 4px;
+            transition: background 0.15s, border-color 0.15s;
+        }
+
+        .btn-add-rule:hover {
+            background: #dbeafe;
+            border-color: #3b82f6;
+        }
+
+        .rules-empty {
+            text-align: center;
+            padding: 16px;
+            color: #94a3b8;
+            font-size: 12px;
+            font-style: italic;
+        }
+
+        .rule-number {
+            font-size: 11px;
+            font-weight: 700;
+            color: #cbd5e1;
+            position: absolute;
+            top: 4px;
+            right: 8px;
         }
     </style>
 </head>
@@ -139,6 +283,16 @@
             <option value="1.5">🚶 Santai (1.5x)</option>
             <option value="2">🐢 Lambat (2.0x - Untuk Koneksi Lemot)</option>
         </select>
+    </div>
+
+    <div class="section">
+        <div class="section-title">Aturan Penggantian Sumber Dana</div>
+        <p class="section-desc">
+            Tentukan aturan cari &amp; ganti sumber dana saat automasi berjalan.<br>
+            Jika teks sumber dana <b>mengandung</b> kata "Cari", maka akan diganti dengan opsi yang <b>mengandung</b> kata "Ganti Dengan".
+        </p>
+        <div id="rules-container"></div>
+        <button type="button" class="btn-add-rule" id="btn-add-rule">＋ Tambah Aturan</button>
     </div>
 
     <button class="btn-save" id="save-btn">Simpan</button>

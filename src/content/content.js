@@ -112,11 +112,16 @@
         }
 
         // ==========================================
-        // SISTEM KECEPATAN OTOMATIS
+        // SISTEM KECEPATAN OTOMATIS & ATURAN SUMBER DANA
         // ==========================================
         let speedMultiplier = 1; // Default Normal
-        chrome.storage.sync.get(['speedMultiplier'], (res) => {
+        let fundRules = [
+            // Default bawaan jika belum ada yang disimpan di settings
+            { search: 'Dana Alokasi Umum', replace: 'DAU yang Ditentukan Penggunaannya Bidang Pendidikan' }
+        ];
+        chrome.storage.sync.get(['speedMultiplier', 'fundRules'], (res) => {
             if (res.speedMultiplier) speedMultiplier = parseFloat(res.speedMultiplier);
+            if (res.fundRules && res.fundRules.length > 0) fundRules = res.fundRules;
         });
 
         // Semua sleep sekarang akan dikalikan dengan opsi di pengaturan!
@@ -222,15 +227,24 @@
                     const selectDana = visibleModal.querySelector('select#sumberDana, select[formcontrolname="sumberDana"]');
                     if (selectDana) {
                         const selectedText = selectDana.options[selectDana.selectedIndex]?.innerText || "";
-                        if ((selectedText.includes("Dana Alokasi Umum") && !selectedText.includes("Pendidikan")) || selectedText.trim() === "" || selectedText.includes("Pilih")) {
+                        const isEmptyOrPlaceholder = selectedText.trim() === "" || selectedText.includes("Pilih");
 
-                            const targetOption = Array.from(selectDana.options).find(o => o.innerText.includes('DAU yang Ditentukan Penggunaannya Bidang Pendidikan'));
-                            if (targetOption && selectDana.value !== targetOption.value) {
-                                selectDana.value = targetOption.value;
-                                selectDana.dispatchEvent(new Event('change', { bubbles: true }));
-                                selectDana.dispatchEvent(new Event('input', { bubbles: true }));
-                                shouldSave = true;
-                                await sleep(500); // Base Normal = 500ms
+                        // Cek semua aturan penggantian sumber dana
+                        for (const rule of fundRules) {
+                            const matchesCurrent = selectedText.includes(rule.search);
+                            // Juga cek apakah sudah berisi teks target (supaya tidak re-replace)
+                            const alreadyTarget = selectedText.includes(rule.replace);
+
+                            if ((matchesCurrent && !alreadyTarget) || isEmptyOrPlaceholder) {
+                                const targetOption = Array.from(selectDana.options).find(o => o.innerText.includes(rule.replace));
+                                if (targetOption && selectDana.value !== targetOption.value) {
+                                    selectDana.value = targetOption.value;
+                                    selectDana.dispatchEvent(new Event('change', { bubbles: true }));
+                                    selectDana.dispatchEvent(new Event('input', { bubbles: true }));
+                                    shouldSave = true;
+                                    await sleep(500); // Base Normal = 500ms
+                                    break; // Aturan pertama yang cocok langsung diterapkan
+                                }
                             }
                         }
                     }
