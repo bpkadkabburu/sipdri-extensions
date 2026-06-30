@@ -1,9 +1,11 @@
 document.addEventListener('DOMContentLoaded', async () => {
-    const saved = await chrome.storage.sync.get(['idDaerah', 'tahun', 'speedMultiplier', 'fundRules']);
-    
+    const saved = await chrome.storage.sync.get(['idDaerah', 'tahun', 'speedMultiplier', 'fundRules', 'localApiUrl', 'localToken']);
+
     if (saved.idDaerah) document.getElementById('idDaerah').value = saved.idDaerah;
     if (saved.tahun) document.getElementById('tahun').value = saved.tahun;
     if (saved.speedMultiplier) document.getElementById('speedMultiplier').value = saved.speedMultiplier;
+    if (saved.localApiUrl) document.getElementById('localApiUrl').value = saved.localApiUrl;
+    if (saved.localToken) document.getElementById('localToken').value = saved.localToken;
 
     // ===== ATURAN PENGGANTIAN SUMBER DANA =====
     const rulesContainer = document.getElementById('rules-container');
@@ -95,7 +97,9 @@ document.addEventListener('DOMContentLoaded', async () => {
             idDaerah: document.getElementById('idDaerah').value.trim(),
             tahun: document.getElementById('tahun').value.trim(),
             speedMultiplier: document.getElementById('speedMultiplier').value,
-            fundRules: fundRules
+            fundRules: fundRules,
+            localApiUrl: document.getElementById('localApiUrl').value.trim(),
+            localToken: document.getElementById('localToken').value.trim(),
         };
         
         await chrome.storage.sync.set(data);

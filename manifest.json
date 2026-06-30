@@ -5,7 +5,9 @@
   "description": "Ambil dan ekspor data sub kegiatan dari SIPD-RI",
   "permissions": ["storage", "webRequest", "scripting"],
   "host_permissions": [
-    "https://sipd-ri.kemendagri.go.id/*"
+    "https://sipd-ri.kemendagri.go.id/*",
+    "http://localhost/*",
+    "http://127.0.0.1/*"
   ],
   "background": {
     "service_worker": "src/background/service-worker.js"

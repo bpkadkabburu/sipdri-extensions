@@ -20,6 +20,14 @@
             filename: 'sumber_dana',
         },
         {
+            pattern: /\/master\/skpd\b/,
+            title: 'Sinkronisasi SKPD',
+            btnText: 'Sinkronisasi SKPD ke SIPDRI',
+            action: 'syncSkpd',
+            sheetName: '',
+            filename: '',
+        },
+        {
             pattern: /\/rincian\b|\/belanja\b|\/detail\b|\/jadwal\b|\/sub_giat\b/,
             title: 'Automasi Sumber Dana',
             btnText: 'Mulai Automasi DAU',
@@ -295,6 +303,54 @@
                     setStatus('Automasi berhasil dihentikan!', 'err');
                 } else {
                     startAutomasiDAU();
+                }
+                return;
+            }
+
+            if (cfg.action === 'syncSkpd') {
+                const saved = await new Promise(resolve => chrome.storage.sync.get(['idDaerah', 'tahun', 'localApiUrl', 'localToken'], resolve));
+
+                if (!saved.idDaerah) {
+                    setStatus('Set ID Daerah di Pengaturan dulu', 'err');
+                    return;
+                }
+                if (!saved.localApiUrl || !saved.localToken) {
+                    setStatus('Set URL & Token API Lokal di Pengaturan dulu', 'err');
+                    return;
+                }
+
+                const btn = $('btn-fetch');
+                btn.disabled = true;
+                setStatus('Mengambil data SKPD dari SIPD-RI...', 'loading');
+                setProgress(0, 0);
+
+                const tahun = Number(saved.tahun) || new Date().getFullYear();
+
+                try {
+                    const res = await new Promise((resolve, reject) => {
+                        chrome.runtime.sendMessage({
+                            action: 'syncSkpd',
+                            params: {
+                                idDaerah: Number(saved.idDaerah),
+                                tahun,
+                                localApiUrl: saved.localApiUrl.replace(/\/$/, '') + '/api/referensi/skpd',
+                                localToken: saved.localToken,
+                            }
+                        }, (r) => {
+                            if (chrome.runtime.lastError) reject(new Error(chrome.runtime.lastError.message));
+                            else if (!r) reject(new Error('Tidak ada response dari service worker'));
+                            else if (!r.success) reject(new Error(r.error || 'Gagal tanpa pesan error'));
+                            else resolve(r.data);
+                        });
+                    });
+
+                    setProgress(1, 1);
+                    setStatus(`✓ ${res?.total ?? '?'} SKPD berhasil disinkronisasi`, 'ok');
+                } catch (err) {
+                    setStatus('Error: ' + err.message, 'err');
+                } finally {
+                    btn.disabled = false;
+                    setTimeout(() => setProgress(0, 0), 3000);
                 }
                 return;
             }

@@ -274,6 +274,18 @@
     </div>
 
     <div class="section">
+        <div class="section-title">Koneksi API Lokal (SIPDRI)</div>
+        <p class="section-desc">
+            Digunakan untuk fitur sinkronisasi data (mis. SKPD) ke server SIPDRI lokal.
+        </p>
+        <label>URL Server Lokal</label>
+        <input type="url" id="localApiUrl" placeholder="cth: http://localhost:3000">
+        <p class="hint">Tanpa garis miring di akhir. Endpoint lengkapnya akan ditentukan otomatis.</p>
+        <label>Token JWT</label>
+        <input type="text" id="localToken" placeholder="eyJhbGci...">
+    </div>
+
+    <div class="section">
         <div class="section-title">Opsi Automasi SIPD</div>
         <label>Kecepatan Automasi</label>
         <select id="speedMultiplier">
