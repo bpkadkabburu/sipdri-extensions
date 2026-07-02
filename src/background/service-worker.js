@@ -1,5 +1,29 @@
 // Service worker — SIPD-RI Extensions
 
+// Intersep request body untuk menangkap id_user (dipakai di list_skpd cascading)
+chrome.webRequest.onBeforeRequest.addListener(
+    (details) => {
+        if (details.method !== 'POST') return;
+        const body = details.requestBody;
+
+        // FormData / urlencoded
+        let idUser = body?.formData?.id_user?.[0];
+
+        // JSON body
+        if (!idUser && body?.raw?.[0]?.bytes) {
+            try {
+                const text = new TextDecoder().decode(new Uint8Array(body.raw[0].bytes));
+                const json = JSON.parse(text);
+                if (json.id_user) idUser = String(json.id_user);
+            } catch (e) {}
+        }
+
+        if (idUser) chrome.storage.session.set({ idUser });
+    },
+    { urls: ['https://sipd-ri.kemendagri.go.id/api/*'] },
+    ['requestBody']
+);
+
 // Intersep setiap request ke API SIPD-RI untuk menangkap token auth
 chrome.webRequest.onBeforeSendHeaders.addListener(
     (details) => {
@@ -23,6 +47,8 @@ const ACTION_URLS = {
     fetchSubGiat:    'https://sipd-ri.kemendagri.go.id/api/master/sub_giat/list_table',
     fetchSumberDana: 'https://sipd-ri.kemendagri.go.id/api/master/sumber_dana/listNew',
     fetchSkpd:       'https://sipd-ri.kemendagri.go.id/api/master/skpd/listNew',
+    listSkpdCascading: 'https://sipd-ri.kemendagri.go.id/api/renja/sub_bl/list_skpd',
+    listBelanjaUnit:   'https://sipd-ri.kemendagri.go.id/api/renja/sub_bl/list_belanja_by_tahun_daerah_unit',
 };
 
 chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
@@ -30,6 +56,18 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
         chrome.storage.session.get(['accessToken', 'apiKey'], (result) => {
             sendResponse({ hasToken: !!result.accessToken });
         });
+        return true;
+    }
+
+    if (msg.action === 'syncSubGiat') {
+        const tabId = sender.tab?.id;
+        if (!tabId) {
+            sendResponse({ success: false, error: 'Tab tidak ditemukan' });
+            return;
+        }
+        handleSyncSubGiat(msg.params, tabId)
+            .then(sendResponse)
+            .catch((err) => sendResponse({ success: false, error: err.message }));
         return true;
     }
 
@@ -136,7 +174,7 @@ async function handleSyncSkpd(params, tabId) {
         method: 'POST',
         headers: {
             'Content-Type': 'application/json',
-            'Authorization': `Bearer ${localToken}`,
+            'X-API-Key': localToken,
         },
         body: JSON.stringify({ tahun, data: allRows }),
     });
@@ -148,6 +186,151 @@ async function handleSyncSkpd(params, tabId) {
 
     const postJson = await postRes.json().catch(() => ({}));
     return { success: true, data: { total: allRows.length, response: postJson } };
+}
+
+async function handleSyncSubGiat(params, tabId) {
+    const { accessToken, apiKey, idUser } = await chrome.storage.session.get(['accessToken', 'apiKey', 'idUser']);
+
+    if (!accessToken) {
+        return {
+            success: false,
+            error: 'Token belum tersedia. Buka halaman SIPD-RI dan lakukan aktivitas apa saja, lalu coba lagi.',
+        };
+    }
+
+    const { idDaerah, tahun, localApiUrl, localToken, isAnggaran } = params;
+    const skpdUrl   = ACTION_URLS.listSkpdCascading;
+    const belanjaUrl = ACTION_URLS.listBelanjaUnit;
+
+    // Langkah 1: Ambil daftar unit SKPD
+    const skpdResult = await chrome.scripting.executeScript({
+        target: { tabId },
+        func: async (idDaerah, tahun, idUser, token, key, skpdUrl, isAnggaran) => {
+            try {
+                const allUnits = [];
+                let offset = 0;
+                const limit = 500;
+
+                while (true) {
+                    const fd = new FormData();
+                    fd.append('tahun', String(tahun));
+                    fd.append('id_daerah', String(idDaerah));
+                    fd.append('id_user', String(idUser || 0));
+                    fd.append('id_unit', '0');
+                    fd.append('id_level', '2');
+                    fd.append('search', '');
+                    fd.append('limit', String(limit));
+                    fd.append('offset', String(offset));
+                    fd.append('is_anggaran', String(isAnggaran));
+
+                    const headers = { 'x-access-token': token };
+                    if (key) headers['x-api-key'] = key;
+
+                    const res = await fetch(skpdUrl, { method: 'POST', headers, body: fd });
+                    if (!res.ok) {
+                        const text = await res.text().catch(() => '');
+                        return { ok: false, error: `list_skpd HTTP ${res.status}: ${text.substring(0, 150)}` };
+                    }
+
+                    const json = await res.json();
+                    const rows = json?.data ?? [];
+                    const total = json?.recordsTotal ?? json?.recordsFiltered ?? null;
+
+                    if (rows.length === 0) break;
+                    allUnits.push(...rows);
+                    offset += limit;
+                    if (total !== null && allUnits.length >= total) break;
+                }
+
+                return { ok: true, units: allUnits };
+            } catch (e) {
+                return { ok: false, error: e.message };
+            }
+        },
+        args: [idDaerah, tahun, idUser || 0, accessToken, apiKey || null, skpdUrl, isAnggaran ?? 1],
+    });
+
+    if (!skpdResult?.[0]) throw new Error('Gagal menjalankan script di tab');
+    if (skpdResult[0].error) throw new Error(skpdResult[0].error.message || String(skpdResult[0].error));
+    const skpdData = skpdResult[0].result;
+    if (!skpdData?.ok) throw new Error(skpdData?.error || 'Gagal ambil daftar unit SKPD');
+
+    const allUnits = skpdData.units;
+    if (allUnits.length === 0) throw new Error('Tidak ada unit SKPD ditemukan');
+
+    // Langkah 2: Per unit — ambil sub kegiatan lalu langsung POST ke server lokal
+    let totalRows = 0;
+    let failed = 0;
+
+    for (let i = 0; i < allUnits.length; i++) {
+        const unit = allUnits[i];
+        if ((unit.set_pagu_skpd ?? 0) === 0) continue;
+
+        const namaSkpd = unit.nama_skpd || `Unit ${unit.id_unit}`;
+
+        chrome.tabs.sendMessage(tabId, {
+            action: 'syncSubGiatProgress',
+            namaSkpd,
+            unitIndex: i + 1,
+            totalUnits: allUnits.length,
+            totalRowsSent: totalRows,
+            phase: 'fetch',
+        });
+
+        const belanjaResult = await chrome.scripting.executeScript({
+            target: { tabId },
+            func: async (idDaerah, tahun, idUnit, token, key, belanjaUrl, isAnggaran) => {
+                try {
+                    const fd = new FormData();
+                    fd.append('tahun', String(tahun));
+                    fd.append('id_daerah', String(idDaerah));
+                    fd.append('id_unit', String(idUnit));
+                    fd.append('is_prop', '0');
+                    fd.append('is_anggaran', String(isAnggaran));
+
+                    const headers = { 'x-access-token': token };
+                    if (key) headers['x-api-key'] = key;
+
+                    const res = await fetch(belanjaUrl, { method: 'POST', headers, body: fd });
+                    if (!res.ok) {
+                        const text = await res.text().catch(() => '');
+                        return { ok: false, error: `HTTP ${res.status}: ${text.substring(0, 100)}` };
+                    }
+
+                    const json = await res.json();
+                    return { ok: true, rows: json?.data ?? [] };
+                } catch (e) {
+                    return { ok: false, error: e.message };
+                }
+            },
+            args: [idDaerah, tahun, unit.id_skpd, accessToken, apiKey || null, belanjaUrl, isAnggaran ?? 1],
+        });
+
+        const belanjaData = belanjaResult?.[0]?.result;
+        if (!belanjaData?.ok) { failed++; continue; }
+
+        const postRes = await fetch(localApiUrl, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', 'X-API-Key': localToken },
+            body: JSON.stringify({ tahun, id_skpd: unit.id_skpd, data: belanjaData.rows }),
+        });
+
+        if (!postRes.ok) { failed++; continue; }
+
+        await postRes.json().catch(() => ({}));
+        totalRows += belanjaData.rows.length;
+
+        chrome.tabs.sendMessage(tabId, {
+            action: 'syncSubGiatProgress',
+            namaSkpd,
+            unitIndex: i + 1,
+            totalUnits: allUnits.length,
+            totalRowsSent: totalRows,
+            phase: 'done',
+        });
+    }
+
+    return { success: true, data: { total: totalRows, totalUnits: allUnits.length, failed } };
 }
 
 async function handleFetch(params, tabId, apiUrl) {

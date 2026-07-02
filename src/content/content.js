@@ -12,6 +12,14 @@
             filename: 'sub_kegiatan',
         },
         {
+            pattern: /\/(penganggaran\/anggaran|perencanaan\/renja)\/cascading(?:[?#]|$)/,
+            title: 'Sinkronisasi Sub Kegiatan',
+            btnText: 'Sinkronisasi Sub Kegiatan ke SIPDRI',
+            action: 'syncSubGiat',
+            sheetName: '',
+            filename: '',
+        },
+        {
             pattern: /\/master\/sumber_dana\b/,
             title: 'Sumber Dana SIPD-RI',
             btnText: 'Ambil Semua Data Sumber Dana',
@@ -333,7 +341,7 @@
                             params: {
                                 idDaerah: Number(saved.idDaerah),
                                 tahun,
-                                localApiUrl: saved.localApiUrl.replace(/\/$/, '') + '/api/referensi/skpd',
+                                localApiUrl: saved.localApiUrl.replace(/\/$/, '') + '/api/sync/skpd',
                                 localToken: saved.localToken,
                             }
                         }, (r) => {
@@ -349,6 +357,69 @@
                 } catch (err) {
                     setStatus('Error: ' + err.message, 'err');
                 } finally {
+                    btn.disabled = false;
+                    setTimeout(() => setProgress(0, 0), 3000);
+                }
+                return;
+            }
+
+            if (cfg.action === 'syncSubGiat') {
+                const saved = await new Promise(resolve => chrome.storage.sync.get(['idDaerah', 'tahun', 'localApiUrl', 'localToken'], resolve));
+
+                if (!saved.idDaerah) {
+                    setStatus('Set ID Daerah di Pengaturan dulu', 'err');
+                    return;
+                }
+                if (!saved.localApiUrl || !saved.localToken) {
+                    setStatus('Set URL & Token API Lokal di Pengaturan dulu', 'err');
+                    return;
+                }
+
+                const btn = $('btn-fetch');
+                btn.disabled = true;
+                setStatus('Mengambil daftar unit SKPD...', 'loading');
+                setProgress(0, 0);
+
+                const tahun = Number(saved.tahun) || new Date().getFullYear();
+
+                const progressListener = (msg) => {
+                    if (msg.action !== 'syncSubGiatProgress') return;
+                    const label = `[${msg.unitIndex}/${msg.totalUnits}] ${msg.namaSkpd}`;
+                    if (msg.phase === 'fetch') {
+                        setStatus(`${label} — mengambil...`, 'loading');
+                    } else {
+                        setStatus(`${label} — ${msg.totalRowsSent} sub kegiatan terkirim`, 'loading');
+                    }
+                    setProgress(msg.unitIndex, msg.totalUnits);
+                };
+                chrome.runtime.onMessage.addListener(progressListener);
+
+                try {
+                    const res = await new Promise((resolve, reject) => {
+                        chrome.runtime.sendMessage({
+                            action: 'syncSubGiat',
+                            params: {
+                                idDaerah: Number(saved.idDaerah),
+                                tahun,
+                                localApiUrl: saved.localApiUrl.replace(/\/$/, '') + '/api/sync/sub-kegiatan',
+                                localToken: saved.localToken,
+                                isAnggaran: window.location.pathname.includes('/penganggaran/') ? 1 : 0,
+                            }
+                        }, (r) => {
+                            if (chrome.runtime.lastError) reject(new Error(chrome.runtime.lastError.message));
+                            else if (!r) reject(new Error('Tidak ada response dari service worker'));
+                            else if (!r.success) reject(new Error(r.error || 'Gagal tanpa pesan error'));
+                            else resolve(r.data);
+                        });
+                    });
+
+                    setProgress(res?.totalUnits ?? 1, res?.totalUnits ?? 1);
+                    const failNote = res?.failed ? `, ${res.failed} unit gagal` : '';
+                    setStatus(`✓ ${res?.total ?? '?'} sub kegiatan dari ${res?.totalUnits ?? '?'} unit${failNote}`, 'ok');
+                } catch (err) {
+                    setStatus('Error: ' + err.message, 'err');
+                } finally {
+                    chrome.runtime.onMessage.removeListener(progressListener);
                     btn.disabled = false;
                     setTimeout(() => setProgress(0, 0), 3000);
                 }
