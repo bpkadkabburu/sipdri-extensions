@@ -76,8 +76,9 @@
                 box-shadow: 0 4px 24px rgba(0,0,0,0.18);
                 font-family: 'Segoe UI', Tahoma, sans-serif; font-size: 13px; color: #1e293b; overflow: hidden;
             }
-            .ph { background: #1e3a5f; color: white; padding: 10px 14px; }
+            .ph { background: #1e3a5f; color: white; padding: 10px 14px; cursor: move; user-select: none; touch-action: none; }
             .ph span { font-size: 13px; font-weight: 700; }
+            #widget.dragging { transition: none; opacity: 0.9; }
             .body { padding: 12px; display: flex; flex-direction: column; gap: 8px; }
             #btn-fetch {
                 width: 100%; padding: 10px; background: #3b82f6; color: white;
@@ -108,6 +109,56 @@
         shadow.appendChild(widget);
 
         const $ = (id) => shadow.querySelector('#' + id);
+
+        // ==========================================
+        // WIDGET BISA DIGESER (DRAGGABLE), POSISI DIINGAT
+        // ==========================================
+        const POS_KEY = 'sipd_widget_pos';
+        function clampPos(left, top) {
+            const maxLeft = Math.max(0, window.innerWidth - widget.offsetWidth - 4);
+            const maxTop = Math.max(0, window.innerHeight - widget.offsetHeight - 4);
+            return { left: Math.min(Math.max(0, left), maxLeft), top: Math.min(Math.max(0, top), maxTop) };
+        }
+        function applyPos(left, top) {
+            const p = clampPos(left, top);
+            widget.style.left = p.left + 'px';
+            widget.style.top = p.top + 'px';
+            widget.style.right = 'auto';
+            widget.style.bottom = 'auto';
+        }
+        chrome.storage.local.get([POS_KEY], (res) => {
+            if (res[POS_KEY]) applyPos(res[POS_KEY].left, res[POS_KEY].top);
+        });
+        (function setupDrag() {
+            const handle = shadow.querySelector('.ph');
+            let dragging = false, offsetX = 0, offsetY = 0;
+            handle.addEventListener('pointerdown', (e) => {
+                dragging = true;
+                widget.classList.add('dragging');
+                const rect = widget.getBoundingClientRect();
+                offsetX = e.clientX - rect.left;
+                offsetY = e.clientY - rect.top;
+                applyPos(rect.left, rect.top);
+                handle.setPointerCapture(e.pointerId);
+            });
+            handle.addEventListener('pointermove', (e) => {
+                if (!dragging) return;
+                applyPos(e.clientX - offsetX, e.clientY - offsetY);
+            });
+            function endDrag(e) {
+                if (!dragging) return;
+                dragging = false;
+                widget.classList.remove('dragging');
+                const rect = widget.getBoundingClientRect();
+                chrome.storage.local.set({ [POS_KEY]: { left: rect.left, top: rect.top } });
+            }
+            handle.addEventListener('pointerup', endDrag);
+            handle.addEventListener('pointercancel', endDrag);
+            window.addEventListener('resize', () => {
+                const rect = widget.getBoundingClientRect();
+                applyPos(rect.left, rect.top);
+            });
+        })();
 
         function setStatus(msg, type) {
             const el = $('status');
