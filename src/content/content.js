@@ -2,6 +2,22 @@
     const ROOT_ID = 'sipd-ext-root';
     const STATE_KEY = 'sipd_auto_state';
 
+    // idDaerah/tahun diutamakan dari hasil intersep request asli SIPD-RI (storage.session),
+    // fallback ke isian manual di Pengaturan (storage.sync) kalau belum ada yang tertangkap
+    async function getIdDaerahTahun() {
+        const [session, sync] = await Promise.all([
+            new Promise(resolve => chrome.storage.session.get(['idDaerah', 'tahun'], (r) => {
+                if (chrome.runtime.lastError) resolve({});
+                else resolve(r);
+            })),
+            new Promise(resolve => chrome.storage.sync.get(['idDaerah', 'tahun'], resolve)),
+        ]);
+        return {
+            idDaerah: session.idDaerah || sync.idDaerah,
+            tahun: session.tahun || sync.tahun,
+        };
+    }
+
     const PAGES = [
         {
             pattern: /\/master\/sub_giat\b/,
@@ -21,11 +37,11 @@
         },
         {
             pattern: /\/master\/sumber_dana\b/,
-            title: 'Sumber Dana SIPD-RI',
-            btnText: 'Ambil Semua Data Sumber Dana',
-            action: 'fetchSumberDana',
-            sheetName: 'Sumber Dana',
-            filename: 'sumber_dana',
+            title: 'Sinkronisasi Sumber Dana',
+            btnText: 'Sinkronisasi Sumber Dana ke SIPDRI',
+            action: 'syncSumberDana',
+            sheetName: '',
+            filename: '',
         },
         {
             pattern: /\/master\/skpd\b/,
@@ -367,10 +383,13 @@
             }
 
             if (cfg.action === 'syncSkpd') {
-                const saved = await new Promise(resolve => chrome.storage.sync.get(['idDaerah', 'tahun', 'localApiUrl', 'localToken'], resolve));
+                const [idTahun, saved] = await Promise.all([
+                    getIdDaerahTahun(),
+                    new Promise(resolve => chrome.storage.sync.get(['localApiUrl', 'localToken'], resolve)),
+                ]);
 
-                if (!saved.idDaerah) {
-                    setStatus('Set ID Daerah di Pengaturan dulu', 'err');
+                if (!idTahun.idDaerah) {
+                    setStatus('ID Daerah belum terdeteksi — buka halaman SIPD-RI dulu, atau set manual di Pengaturan', 'err');
                     return;
                 }
                 if (!saved.localApiUrl || !saved.localToken) {
@@ -383,14 +402,14 @@
                 setStatus('Mengambil data SKPD dari SIPD-RI...', 'loading');
                 setProgress(0, 0);
 
-                const tahun = Number(saved.tahun) || new Date().getFullYear();
+                const tahun = Number(idTahun.tahun) || new Date().getFullYear();
 
                 try {
                     const res = await new Promise((resolve, reject) => {
                         chrome.runtime.sendMessage({
                             action: 'syncSkpd',
                             params: {
-                                idDaerah: Number(saved.idDaerah),
+                                idDaerah: Number(idTahun.idDaerah),
                                 tahun,
                                 localApiUrl: saved.localApiUrl.replace(/\/$/, '') + '/api/sync/skpd',
                                 localToken: saved.localToken,
@@ -414,11 +433,65 @@
                 return;
             }
 
-            if (cfg.action === 'syncSubGiat') {
-                const saved = await new Promise(resolve => chrome.storage.sync.get(['idDaerah', 'tahun', 'localApiUrl', 'localToken'], resolve));
+            if (cfg.action === 'syncSumberDana') {
+                const [idTahun, saved] = await Promise.all([
+                    getIdDaerahTahun(),
+                    new Promise(resolve => chrome.storage.sync.get(['localApiUrl', 'localToken'], resolve)),
+                ]);
 
-                if (!saved.idDaerah) {
-                    setStatus('Set ID Daerah di Pengaturan dulu', 'err');
+                if (!idTahun.idDaerah) {
+                    setStatus('ID Daerah belum terdeteksi — buka halaman SIPD-RI dulu, atau set manual di Pengaturan', 'err');
+                    return;
+                }
+                if (!saved.localApiUrl || !saved.localToken) {
+                    setStatus('Set URL & Token API Lokal di Pengaturan dulu', 'err');
+                    return;
+                }
+
+                const btn = $('btn-fetch');
+                btn.disabled = true;
+                setStatus('Mengambil data Sumber Dana dari SIPD-RI...', 'loading');
+                setProgress(0, 0);
+
+                const tahun = Number(idTahun.tahun) || new Date().getFullYear();
+
+                try {
+                    const res = await new Promise((resolve, reject) => {
+                        chrome.runtime.sendMessage({
+                            action: 'syncSumberDana',
+                            params: {
+                                idDaerah: Number(idTahun.idDaerah),
+                                tahun,
+                                localApiUrl: saved.localApiUrl.replace(/\/$/, '') + '/api/sync/sumber-dana',
+                                localToken: saved.localToken,
+                            }
+                        }, (r) => {
+                            if (chrome.runtime.lastError) reject(new Error(chrome.runtime.lastError.message));
+                            else if (!r) reject(new Error('Tidak ada response dari service worker'));
+                            else if (!r.success) reject(new Error(r.error || 'Gagal tanpa pesan error'));
+                            else resolve(r.data);
+                        });
+                    });
+
+                    setProgress(1, 1);
+                    setStatus(`✓ ${res?.total ?? '?'} Sumber Dana berhasil disinkronisasi`, 'ok');
+                } catch (err) {
+                    setStatus('Error: ' + err.message, 'err');
+                } finally {
+                    btn.disabled = false;
+                    setTimeout(() => setProgress(0, 0), 3000);
+                }
+                return;
+            }
+
+            if (cfg.action === 'syncSubGiat') {
+                const [idTahun, saved] = await Promise.all([
+                    getIdDaerahTahun(),
+                    new Promise(resolve => chrome.storage.sync.get(['localApiUrl', 'localToken'], resolve)),
+                ]);
+
+                if (!idTahun.idDaerah) {
+                    setStatus('ID Daerah belum terdeteksi — buka halaman SIPD-RI dulu, atau set manual di Pengaturan', 'err');
                     return;
                 }
                 if (!saved.localApiUrl || !saved.localToken) {
@@ -431,7 +504,7 @@
                 setStatus('Mengambil daftar unit SKPD...', 'loading');
                 setProgress(0, 0);
 
-                const tahun = Number(saved.tahun) || new Date().getFullYear();
+                const tahun = Number(idTahun.tahun) || new Date().getFullYear();
 
                 const progressListener = (msg) => {
                     if (msg.action !== 'syncSubGiatProgress') return;
@@ -450,7 +523,7 @@
                         chrome.runtime.sendMessage({
                             action: 'syncSubGiat',
                             params: {
-                                idDaerah: Number(saved.idDaerah),
+                                idDaerah: Number(idTahun.idDaerah),
                                 tahun,
                                 localApiUrl: saved.localApiUrl.replace(/\/$/, '') + '/api/sync/sub-kegiatan',
                                 localToken: saved.localToken,

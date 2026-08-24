@@ -1,6 +1,10 @@
 // Service worker — SIPD-RI Extensions
 
-// Intersep request body untuk menangkap id_user (dipakai di list_skpd cascading)
+// Default-nya storage.session cuma bisa diakses dari background/extension context.
+// Izinkan content script baca juga, karena widget di halaman perlu id_daerah/tahun hasil intersep.
+chrome.storage.session.setAccessLevel({ accessLevel: 'TRUSTED_AND_UNTRUSTED_CONTEXTS' });
+
+// Intersep request body untuk menangkap id_user, id_daerah & tahun dari request asli SIPD-RI
 chrome.webRequest.onBeforeRequest.addListener(
     (details) => {
         if (details.method !== 'POST') return;
@@ -8,17 +12,26 @@ chrome.webRequest.onBeforeRequest.addListener(
 
         // FormData / urlencoded
         let idUser = body?.formData?.id_user?.[0];
+        let idDaerah = body?.formData?.id_daerah?.[0];
+        let tahun = body?.formData?.tahun?.[0];
 
         // JSON body
-        if (!idUser && body?.raw?.[0]?.bytes) {
+        if ((!idUser || !idDaerah || !tahun) && body?.raw?.[0]?.bytes) {
             try {
                 const text = new TextDecoder().decode(new Uint8Array(body.raw[0].bytes));
                 const json = JSON.parse(text);
-                if (json.id_user) idUser = String(json.id_user);
+                if (!idUser && json.id_user) idUser = String(json.id_user);
+                if (!idDaerah && json.id_daerah) idDaerah = String(json.id_daerah);
+                if (!tahun && json.tahun) tahun = String(json.tahun);
             } catch (e) {}
         }
 
-        if (idUser) chrome.storage.session.set({ idUser });
+        const update = {};
+        if (idUser) update.idUser = idUser;
+        if (idDaerah) update.idDaerah = idDaerah;
+        if (tahun) update.tahun = tahun;
+
+        if (Object.keys(update).length > 0) chrome.storage.session.set(update);
     },
     { urls: ['https://sipd-ri.kemendagri.go.id/api/*'] },
     ['requestBody']
@@ -83,6 +96,18 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
         return true;
     }
 
+    if (msg.action === 'syncSumberDana') {
+        const tabId = sender.tab?.id;
+        if (!tabId) {
+            sendResponse({ success: false, error: 'Tab tidak ditemukan' });
+            return;
+        }
+        handleSyncSumberDana(msg.params, tabId)
+            .then(sendResponse)
+            .catch((err) => sendResponse({ success: false, error: err.message }));
+        return true;
+    }
+
     const apiUrl = ACTION_URLS[msg.action];
     if (apiUrl) {
         const tabId = sender.tab?.id;
@@ -111,6 +136,97 @@ async function handleSyncSkpd(params, tabId) {
     const { idDaerah, tahun, localApiUrl, localToken } = params;
 
     // Langkah 1: Ambil semua data SKPD dari SIPD-RI via page context
+    // (harus dari page context agar Origin & cookies SIPD-RI valid)
+    const results = await chrome.scripting.executeScript({
+        target: { tabId },
+        func: async (idDaerah, tahun, token, key, sipdUrl) => {
+            try {
+                const PAGE_SIZE = 1000;
+                const allRows = [];
+                let start = 0;
+
+                while (true) {
+                    const formData = new FormData();
+                    formData.append('id_daerah', String(idDaerah));
+                    formData.append('tahun', String(tahun));
+                    formData.append('deleted_data', 'true');
+                    formData.append('order[0][column]', '0');
+                    formData.append('order[0][dir]', 'asc');
+                    formData.append('search[value]', '');
+                    formData.append('length', String(PAGE_SIZE));
+                    formData.append('start', String(start));
+
+                    const headers = { 'x-access-token': token };
+                    if (key) headers['x-api-key'] = key;
+
+                    const res = await fetch(sipdUrl, { method: 'POST', headers, body: formData });
+                    if (!res.ok) {
+                        const text = await res.text().catch(() => '');
+                        return { ok: false, error: `SIPD HTTP ${res.status}: ${text.substring(0, 150)}` };
+                    }
+
+                    const json = await res.json();
+                    const inner = json?.data;
+                    const rows = Array.isArray(inner) ? inner : (inner?.data ?? []);
+                    const total = inner?.recordsTotal ?? inner?.recordsFiltered ?? null;
+
+                    if (rows.length === 0) break;
+                    allRows.push(...rows);
+                    start += PAGE_SIZE;
+                    if (total !== null && allRows.length >= total) break;
+                }
+
+                return { ok: true, rows: allRows };
+            } catch (e) {
+                return { ok: false, error: e.message };
+            }
+        },
+        args: [idDaerah, tahun, accessToken, apiKey || null, sipdUrl],
+    });
+
+    if (!results?.[0]) throw new Error('Gagal menjalankan script di tab');
+    if (results[0].error) throw new Error(results[0].error.message || String(results[0].error));
+
+    const scriptResult = results[0].result;
+    if (!scriptResult) throw new Error('executeScript tidak mengembalikan hasil');
+    if (!scriptResult.ok) throw new Error(scriptResult.error);
+
+    const allRows = scriptResult.rows;
+
+    // Langkah 2: POST ke server lokal dari service worker
+    // (tidak ada masalah CORS karena service worker tidak punya Origin header seperti browser page)
+    const postRes = await fetch(localApiUrl, {
+        method: 'POST',
+        headers: {
+            'Content-Type': 'application/json',
+            'X-API-Key': localToken,
+        },
+        body: JSON.stringify({ tahun, data: allRows }),
+    });
+
+    if (!postRes.ok) {
+        const text = await postRes.text().catch(() => '');
+        throw new Error(`Gagal kirim ke server lokal (HTTP ${postRes.status}): ${text.substring(0, 200)}`);
+    }
+
+    const postJson = await postRes.json().catch(() => ({}));
+    return { success: true, data: { total: allRows.length, response: postJson } };
+}
+
+async function handleSyncSumberDana(params, tabId) {
+    const { accessToken, apiKey } = await chrome.storage.session.get(['accessToken', 'apiKey']);
+
+    if (!accessToken) {
+        return {
+            success: false,
+            error: 'Token belum tersedia. Buka halaman SIPD-RI dan lakukan aktivitas apa saja, lalu coba lagi.',
+        };
+    }
+
+    const sipdUrl = ACTION_URLS.fetchSumberDana;
+    const { idDaerah, tahun, localApiUrl, localToken } = params;
+
+    // Langkah 1: Ambil semua data Sumber Dana dari SIPD-RI via page context
     // (harus dari page context agar Origin & cookies SIPD-RI valid)
     const results = await chrome.scripting.executeScript({
         target: { tabId },
