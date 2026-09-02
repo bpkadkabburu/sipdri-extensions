@@ -1,6 +1,7 @@
 (function () {
     const ROOT_ID = 'sipd-ext-root';
     const STATE_KEY = 'sipd_auto_state';
+    const STATE_KEY_RKA = 'sipd_auto_state_rka';
 
     // idDaerah/tahun diutamakan dari hasil intersep request asli SIPD-RI (storage.session),
     // fallback ke isian manual di Pengaturan (storage.sync) kalau belum ada yang tertangkap
@@ -52,10 +53,26 @@
             filename: '',
         },
         {
-            pattern: /\/rincian\b|\/belanja\b|\/detail\b|\/jadwal\b|\/sub_giat\b/,
+            pattern: /\/cascading\/rincian\/sub-kegiatan\b/,
             title: 'Automasi Sumber Dana',
             btnText: 'Mulai Automasi DAU',
             action: 'autoUpdateDAU',
+            sheetName: '',
+            filename: '',
+        },
+        {
+            pattern: /(?<!\/cascading)\/(rincian|belanja|detail|jadwal|sub_giat)\b/,
+            title: 'Automasi Sumber Dana',
+            btnText: 'Mulai Automasi DAU',
+            action: 'autoUpdateDAU',
+            sheetName: '',
+            filename: '',
+        },
+        {
+            pattern: /\/cascading\/belanja\b/,
+            title: 'Automasi Download RKA',
+            btnText: 'Mulai Download RKA Rincian Belanja',
+            action: 'autoDownloadRKA',
             sheetName: '',
             filename: '',
         }
@@ -214,7 +231,7 @@
 
         async function setPaginatorToMax() {
             if (stopRequested) return;
-            const paginatorSelect = document.querySelector('mat-select[aria-label="Items per page:"], mat-select[aria-label*="Items"]');
+            const paginatorSelect = document.querySelector('mat-select[aria-label="Items per page:"], mat-select[aria-label*="Items"], mat-select[aria-label*="per halaman"]');
             if (!paginatorSelect) return;
 
             const currentText = paginatorSelect.innerText || "";
@@ -368,7 +385,126 @@
             }
         }
 
+        // ==========================================
+        // AUTOMASI DOWNLOAD RKA RINCIAN BELANJA (halaman cascading/belanja)
+        // ==========================================
+        async function startAutomasiRKA() {
+            let userInput = prompt("Mulai dari baris ke berapa? (Ketik angkanya saja)", "1");
+            let startRow = parseInt(userInput);
+
+            if (isNaN(startRow) || startRow < 1) {
+                setStatus('Automasi dibatalkan.', 'err');
+                return;
+            }
+
+            stopRequested = false;
+            sessionStorage.setItem(STATE_KEY_RKA, JSON.stringify({ isRunning: true, targetRow: startRow - 1, downloaded: 0 }));
+            resumeAutomasiRKA(true);
+        }
+
+        async function resumeAutomasiRKA(isStartingJustNow = false) {
+            const stateStr = sessionStorage.getItem(STATE_KEY_RKA);
+            if (!stateStr) return;
+
+            const state = JSON.parse(stateStr);
+            if (!state.isRunning) return;
+
+            const btn = $('btn-fetch');
+            if (btn) btn.textContent = 'Stop Automasi';
+
+            try {
+                if (!isStartingJustNow) {
+                    setStatus('Tabel Ter-refresh! Menunggu sinkronisasi...', 'loading');
+                    await sleep(2000);
+                }
+
+                if (stopRequested) return;
+                await setPaginatorToMax();
+
+                while (true) {
+                    if (stopRequested || !sessionStorage.getItem(STATE_KEY_RKA)) {
+                        setStatus('Automasi Dihentikan oleh User.', 'err');
+                        return;
+                    }
+
+                    const rows = Array.from(document.querySelectorAll('td.cdk-column-aksi'))
+                        .filter(el => el.offsetParent !== null);
+
+                    if (rows.length === 0) {
+                        setStatus('Selesai. Tidak menemukan baris lagi.', 'ok');
+                        sessionStorage.removeItem(STATE_KEY_RKA);
+                        if (btn) btn.textContent = 'Mulai Download RKA Rincian Belanja';
+                        return;
+                    }
+
+                    if (state.targetRow >= rows.length) {
+                        setStatus(`Automasi Selesai! ${state.downloaded || 0} dari ${rows.length} baris berhasil di-download.`, 'ok');
+                        sessionStorage.removeItem(STATE_KEY_RKA);
+                        if (btn) btn.textContent = 'Mulai Download RKA Rincian Belanja';
+                        return;
+                    }
+
+                    setStatus(`Baris ke-${state.targetRow + 1}/${rows.length} (Download: ${state.downloaded || 0})`, 'loading');
+                    setProgress(state.targetRow, rows.length);
+
+                    const cell = rows[state.targetRow];
+                    const toggleBtn = cell.querySelector('button[ngbdropdowntoggle]');
+                    if (!toggleBtn) {
+                        state.targetRow++;
+                        sessionStorage.setItem(STATE_KEY_RKA, JSON.stringify(state));
+                        continue;
+                    }
+
+                    toggleBtn.click();
+                    await sleep(800);
+
+                    if (stopRequested || !sessionStorage.getItem(STATE_KEY_RKA)) return;
+
+                    let menuBtn = Array.from(cell.querySelectorAll('.dropdown-item'))
+                        .find(el => el.textContent.trim().includes('RKA Rincian Belanja') && el.offsetParent !== null);
+
+                    if (!menuBtn) {
+                        menuBtn = Array.from(document.querySelectorAll('.cdk-overlay-container .dropdown-item, .dropdown-menu.show .dropdown-item'))
+                            .find(el => el.textContent.trim().includes('RKA Rincian Belanja') && el.offsetParent !== null);
+                    }
+
+                    if (menuBtn) {
+                        menuBtn.click();
+                        state.downloaded = (state.downloaded || 0) + 1;
+                        await sleep(2000); // beri waktu proses download
+                    } else {
+                        toggleBtn.click(); // tutup dropdown kalau item tidak ditemukan (baris ini tidak punya tombol download)
+                    }
+
+                    document.body.click(); // pastikan dropdown tertutup sebelum lanjut ke baris berikutnya
+                    await sleep(500);
+
+                    if (stopRequested || !sessionStorage.getItem(STATE_KEY_RKA)) return;
+
+                    state.targetRow++;
+                    sessionStorage.setItem(STATE_KEY_RKA, JSON.stringify(state));
+                }
+
+            } catch (err) {
+                setStatus('Error: ' + err.message, 'err');
+                sessionStorage.removeItem(STATE_KEY_RKA);
+            }
+        }
+
         $('btn-fetch').addEventListener('click', async () => {
+            if (cfg.action === 'autoDownloadRKA') {
+                const stateStr = sessionStorage.getItem(STATE_KEY_RKA);
+                if (stateStr && JSON.parse(stateStr).isRunning) {
+                    stopRequested = true;
+                    sessionStorage.removeItem(STATE_KEY_RKA);
+                    $('btn-fetch').textContent = 'Mulai Download RKA Rincian Belanja';
+                    setStatus('Automasi berhasil dihentikan!', 'err');
+                } else {
+                    startAutomasiRKA();
+                }
+                return;
+            }
+
             if (cfg.action === 'autoUpdateDAU') {
                 const stateStr = sessionStorage.getItem(STATE_KEY);
                 if (stateStr && JSON.parse(stateStr).isRunning) {
@@ -646,6 +782,13 @@
             const stateStr = sessionStorage.getItem(STATE_KEY);
             if (stateStr && JSON.parse(stateStr).isRunning) {
                 resumeAutomasiDAU();
+            }
+        }
+
+        if (cfg.action === 'autoDownloadRKA') {
+            const stateStr = sessionStorage.getItem(STATE_KEY_RKA);
+            if (stateStr && JSON.parse(stateStr).isRunning) {
+                resumeAutomasiRKA();
             }
         }
     }
