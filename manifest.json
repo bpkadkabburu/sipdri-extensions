@@ -17,6 +17,11 @@
       "matches": ["https://sipd-ri.kemendagri.go.id/*"],
       "js": ["lib/xlsx.mini.min.js", "src/content/content.js"],
       "run_at": "document_idle"
+    },
+    {
+      "matches": ["https://sipd-ri.kemendagri.go.id/*"],
+      "js": ["src/content/buka-gaji.js"],
+      "run_at": "document_idle"
     }
   ],
   "action": {
