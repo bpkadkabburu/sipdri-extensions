@@ -1,49 +1,62 @@
 /*
- * buka-gaji.js — Content script: buka massal Sub Kegiatan + Rincian Belanja gaji
+ * buka-gaji.js — Content script: buka/kunci massal Sub Kegiatan + Rincian Belanja
  * di SIPD-RI (Penganggaran > Sub Kegiatan Belanja), lewat klik UI (bukan API).
  *
- * Cara kerja:
- * - Antrian SKPD disimpan di localStorage, jadi tetap jalan walau halaman reload/pindah SKPD.
- * - Di tiap SKPD: cari kata kunci -> cocokkan nama sub kegiatan -> buka menu Aksi ->
- *   klik "Buka Sub Kegiatan" lalu "Buka Rincian Belanja".
- * - HANYA mengklik item yang teksnya persis "Buka ...". Kalau yang muncul "Kunci ...",
- *   artinya sudah terbuka -> dilewati. Item lain tidak pernah disentuh.
- * - Kalau hasil cocok 0 atau terlalu banyak (> MAX_ROWS), SKPD itu dilewati & dicatat.
+ * Yang bisa diatur user di panel:
+ * - Nama/kata kunci sub kegiatan (boleh lebih dari satu, satu per baris). Jadi
+ *   kalau diisi "gaji", yang diproses ya sub kegiatan yang namanya memuat
+ *   "gaji" (ASN, KDH, dll). Kalau diisi nama sub kegiatan lain, yang diproses
+ *   ya itu.
+ * - Aksi untuk Sub Kegiatan & Rincian Belanja, masing-masing: Buka / Kunci /
+ *   Lewati (dua-duanya tidak boleh "Lewati" sekaligus).
+ * - Dinas/SKPD mana saja yang diproses (centang per dinas, ada Pilih Semua /
+ *   Hapus Semua + pencarian).
  *
- * Penyesuaian untuk ekstensi (dari versi asli Claude in Chrome):
+ * Cara kerja:
+ * - Antrian SKPD + pengaturan (kata kunci, aksi) disimpan di localStorage,
+ *   jadi tetap jalan walau halaman reload/pindah SKPD.
+ * - Di tiap SKPD, untuk tiap kata kunci: cari kata kunci itu -> cocokkan baris
+ *   sub kegiatan yang namanya memuat kata kunci -> buka menu Aksi -> klik
+ *   "Buka <label>" (kalau aksinya Buka) atau "Kunci <label>" (kalau aksinya
+ *   Kunci), untuk Sub Kegiatan dan/atau Rincian Belanja sesuai pilihan.
+ * - HANYA mengklik item yang teksnya persis cocok ("Buka ..." / "Kunci ...").
+ *   Kalau item yang dibutuhkan tidak ada (berarti sudah di status itu),
+ *   dilewati & dicatat "sudah terbuka"/"sudah terkunci". Item lain tidak
+ *   pernah disentuh.
+ * - Kalau hasil cocok 0 atau terlalu banyak (> MAX_ROWS), kata kunci itu (untuk
+ *   SKPD tersebut) dilewati & dicatat di log — jadi SKPD yang memang tidak
+ *   punya sub kegiatan itu otomatis terlewat tanpa perlu daftar pengecualian
+ *   manual.
+ *
+ * Penyesuaian untuk ekstensi:
+ * - Panel bisa digeser (drag) seperti widget automasi lain di extension ini;
+ *   posisi & semua pengaturan terakhir diingat di localStorage.
  * - Panel hanya tampil di halaman cascading/belanja (ikut navigasi SPA Angular).
  * - Kalau sedang jalan tapi bukan di halaman belanja (mis. terlempar ke login), antrian
  *   dijeda — tidak redirect terus-menerus. Buka lagi halaman belanja lalu klik "Lanjut".
  * - Kalau sudah 2x diarahkan ke id_skpd yang sama tapi URL tidak pernah cocok,
  *   SKPD itu dilewati & dicatat supaya antrian tetap jalan ke dinas berikutnya.
  * - Tombol Stop berlaku di tengah SKPD (dicek sebelum tiap klik).
- * - Panel di kiri bawah supaya tidak menumpuk dengan panel ekstensi yang sudah ada.
  */
 (() => {
   'use strict';
 
   const BASE = 'https://sipd-ri.kemendagri.go.id/penganggaran/anggaran/cascading/belanja?id_skpd=';
   const PAGE_RE = /\/penganggaran\/anggaran\/cascading\/belanja\b/;
-  const KEY = 'bukaGaji_state_v1';
-  const MAX_ROWS = 3;          // pengaman: jangan buka massal kalau hasil cocok aneh-aneh
+  const KEY = 'bukaGaji_state_v3';            // v3: nambah field `actions` (buka/kunci) & queue dari pilihan dinas
+  const TERMS_KEY = 'bukaGaji_terms_v1';      // kata kunci terakhir, diingat lepas dari status antrian
+  const ACTIONS_KEY = 'bukaGaji_actions_v1';  // aksi terakhir (sub kegiatan / rincian belanja)
+  const SELECTED_KEY = 'bukaGaji_selected_v1'; // id SKPD yang dicentang terakhir
+  const POS_KEY = 'bukaGaji_pos_v1';          // posisi panel (hasil drag)
+  const MAX_ROWS = 3;          // pengaman: jangan proses massal kalau hasil cocok aneh-aneh
   const MAX_NAV = 2;           // maksimal redirect ke id_skpd yang sama sebelum dilewati
   const DELAY = { short: 600, action: 2200, search: 2500, pageReady: 1500 };
-
-  // ---------- Aturan per SKPD ----------
-  const GAJI_ASN = { search: 'gaji', match: /Penyediaan Gaji dan Tunjangan ASN/i };
-
-  function rulesFor(nama) {
-    if (/Puskesmas|Satuan PNF/i.test(nama)) return null;                 // skip
-    if (/^Bagian Keuangan dan Perencanaan/i.test(nama))
-      return [{ search: 'gaji', match: /gaji/i }];                        // gaji ASN + gaji KDH
-    if (/^Bagian /i.test(nama)) return null;                              // bagian setda lain: skip
-    if (/^Sekretariat DPRD/i.test(nama))
-      return [GAJI_ASN, {
-        search: 'Penyelenggaraan Administrasi Keuangan DPRD',
-        match: /Penyelenggaraan Administrasi Keuangan DPRD/i,
-      }];
-    return [GAJI_ASN];
-  }
+  const DEFAULT_TERMS = ['gaji'];
+  const DEFAULT_ACTIONS = { subKegiatan: 'buka', rincian: 'buka' };
+  const STEPS = [
+    { key: 'subKegiatan', label: 'Sub Kegiatan' },
+    { key: 'rincian', label: 'Rincian Belanja' },
+  ];
 
   // Daftar SKPD Kab. Buru TA 2027 (id_skpd | nama). Tambah/hapus sesuai kebutuhan.
   const SKPD = `
@@ -129,35 +142,230 @@
 
   const load = () => { try { return JSON.parse(localStorage.getItem(KEY)) || null; } catch { return null; } };
   const save = s => localStorage.setItem(KEY, JSON.stringify(s));
-  const clear = () => localStorage.removeItem(KEY);
   const currentId = () => new URLSearchParams(location.search).get('id_skpd');
+
+  // Kata kunci sub kegiatan: satu per baris, trim, buang yang kosong/duplikat.
+  function parseTerms(str) {
+    const seen = new Set();
+    return (str || '').split('\n').map(s => s.trim()).filter(s => {
+      if (!s || seen.has(s.toLowerCase())) return false;
+      seen.add(s.toLowerCase());
+      return true;
+    });
+  }
+  const loadTerms = () => { try { return JSON.parse(localStorage.getItem(TERMS_KEY)) || null; } catch { return null; } };
+  const saveTerms = terms => localStorage.setItem(TERMS_KEY, JSON.stringify(terms));
+
+  const loadActions = () => { try { return JSON.parse(localStorage.getItem(ACTIONS_KEY)) || null; } catch { return null; } };
+  const saveActions = actions => localStorage.setItem(ACTIONS_KEY, JSON.stringify(actions));
+
+  const loadSelected = () => { try { return JSON.parse(localStorage.getItem(SELECTED_KEY)) || null; } catch { return null; } };
+  const saveSelected = ids => localStorage.setItem(SELECTED_KEY, JSON.stringify(ids));
+
+  function loadPos() { try { return JSON.parse(localStorage.getItem(POS_KEY)) || null; } catch { return null; } }
+  function savePos(pos) { localStorage.setItem(POS_KEY, JSON.stringify(pos)); }
 
   class Stopped extends Error {}
   const checkStop = () => { if (!load()?.running) throw new Stopped('Dihentikan'); };
 
-  // ---------- Panel kecil ----------
+  // ---------- Drag ----------
+  function clampPos(el, left, top) {
+    const maxLeft = Math.max(0, window.innerWidth - el.offsetWidth - 4);
+    const maxTop = Math.max(0, window.innerHeight - el.offsetHeight - 4);
+    return { left: Math.min(Math.max(0, left), maxLeft), top: Math.min(Math.max(0, top), maxTop) };
+  }
+  function applyPos(el, left, top) {
+    const p = clampPos(el, left, top);
+    el.style.left = p.left + 'px';
+    el.style.top = p.top + 'px';
+    el.style.right = 'auto';
+    el.style.bottom = 'auto';
+  }
+  function setupDrag(el, handle) {
+    let dragging = false, offsetX = 0, offsetY = 0;
+    handle.addEventListener('pointerdown', e => {
+      dragging = true;
+      el.style.transition = 'none';
+      el.style.opacity = '0.9';
+      const rect = el.getBoundingClientRect();
+      offsetX = e.clientX - rect.left;
+      offsetY = e.clientY - rect.top;
+      handle.setPointerCapture(e.pointerId);
+    });
+    handle.addEventListener('pointermove', e => {
+      if (!dragging) return;
+      applyPos(el, e.clientX - offsetX, e.clientY - offsetY);
+    });
+    function endDrag() {
+      if (!dragging) return;
+      dragging = false;
+      el.style.opacity = '';
+      const rect = el.getBoundingClientRect();
+      savePos({ left: rect.left, top: rect.top });
+    }
+    handle.addEventListener('pointerup', endDrag);
+    handle.addEventListener('pointercancel', endDrag);
+    window.addEventListener('resize', () => {
+      const rect = el.getBoundingClientRect();
+      applyPos(el, rect.left, rect.top);
+    });
+  }
+
+  // ---------- Panel: daftar centang dinas/SKPD ----------
+  function buildSkpdList(container, selectedIds) {
+    const selected = new Set(selectedIds);
+    container.innerHTML = '';
+    for (const s of SKPD) {
+      const row = document.createElement('label');
+      row.style.cssText = 'display:flex;gap:6px;align-items:center;font-size:11px;padding:2px 0;cursor:pointer';
+      row.dataset.nama = s.nama.toLowerCase();
+      const cb = document.createElement('input');
+      cb.type = 'checkbox';
+      cb.dataset.id = s.id;
+      cb.checked = selected.has(s.id);
+      const span = document.createElement('span');
+      span.textContent = s.nama;
+      row.appendChild(cb);
+      row.appendChild(span);
+      container.appendChild(row);
+    }
+  }
+  const getChecked = container => [...container.querySelectorAll('input[type="checkbox"]')].filter(c => c.checked).map(c => c.dataset.id);
+
   function panel() {
     let p = document.getElementById('bukaGajiPanel');
     if (p) return p;
     p = document.createElement('div');
     p.id = 'bukaGajiPanel';
-    p.style.cssText = 'position:fixed;left:16px;bottom:16px;z-index:99999;width:340px;max-height:50vh;' +
-      'background:#fff;border:1px solid #ccc;border-radius:8px;box-shadow:0 4px 16px rgba(0,0,0,.15);' +
-      'font:12px/1.4 sans-serif;display:flex;flex-direction:column';
+    p.style.cssText = 'position:fixed;left:16px;bottom:16px;z-index:2147483647;width:340px;max-height:85vh;' +
+      'background:#fff;border-radius:10px;box-shadow:0 4px 24px rgba(0,0,0,.18);' +
+      "font:12px/1.4 'Segoe UI',Tahoma,sans-serif;color:#1e293b;display:flex;flex-direction:column;overflow:hidden";
     p.innerHTML =
-      '<div style="padding:8px;border-bottom:1px solid #eee;display:flex;gap:6px;align-items:center">' +
-      '<b style="flex:1">Buka Gaji Massal</b>' +
-      '<button id="bgStart" style="padding:3px 8px">Mulai</button>' +
-      '<button id="bgResume" style="padding:3px 8px">Lanjut</button>' +
-      '<button id="bgStop" style="padding:3px 8px">Stop</button></div>' +
-      '<div id="bgLog" style="padding:8px;overflow:auto;white-space:pre-wrap"></div>';
+      '<div id="bgHandle" style="background:#1e3a5f;color:#fff;padding:9px 12px;cursor:move;' +
+      'user-select:none;touch-action:none;display:flex;align-items:center;gap:6px;flex:0 0 auto">' +
+      '<b style="flex:1;font-size:13px">Buka/Kunci Sub Kegiatan Massal</b></div>' +
+
+      '<div id="bgBody" style="padding:10px 12px;display:flex;flex-direction:column;gap:8px;overflow:auto;flex:1;min-height:0;border-bottom:1px solid #eee">' +
+
+      '<div style="display:flex;flex-direction:column;gap:4px">' +
+      '<label style="font-size:11px;color:#64748b">Nama / kata kunci Sub Kegiatan (satu per baris, boleh lebih dari satu)</label>' +
+      '<textarea id="bgTerms" rows="3" placeholder="contoh: gaji" style="width:100%;resize:vertical;' +
+      "font:12px/1.3 'Segoe UI',Tahoma,sans-serif;padding:6px;border:1px solid #cbd5e1;border-radius:6px;box-sizing:border-box\"></textarea>" +
+      '</div>' +
+
+      '<div style="display:flex;gap:6px">' +
+      '<div style="flex:1;display:flex;flex-direction:column;gap:3px">' +
+      '<label style="font-size:11px;color:#64748b">Sub Kegiatan</label>' +
+      '<select id="bgActSub" style="width:100%;padding:5px;border:1px solid #cbd5e1;border-radius:6px;box-sizing:border-box">' +
+      '<option value="buka">Buka</option><option value="kunci">Kunci</option><option value="lewati">Lewati</option>' +
+      '</select></div>' +
+      '<div style="flex:1;display:flex;flex-direction:column;gap:3px">' +
+      '<label style="font-size:11px;color:#64748b">Rincian Belanja</label>' +
+      '<select id="bgActRincian" style="width:100%;padding:5px;border:1px solid #cbd5e1;border-radius:6px;box-sizing:border-box">' +
+      '<option value="buka">Buka</option><option value="kunci">Kunci</option><option value="lewati">Lewati</option>' +
+      '</select></div>' +
+      '</div>' +
+
+      '<details id="bgSkpdWrap" style="border:1px solid #e2e8f0;border-radius:6px">' +
+      '<summary style="padding:6px 8px;cursor:pointer;font-size:11px;color:#334155">' +
+      'Dinas/SKPD: <span id="bgSkpdCount">-</span> dipilih</summary>' +
+      '<div style="padding:6px 8px;border-top:1px solid #e2e8f0;display:flex;flex-direction:column;gap:6px">' +
+      '<input id="bgSkpdFilter" placeholder="Cari dinas..." style="width:100%;padding:5px;border:1px solid #cbd5e1;border-radius:6px;box-sizing:border-box" />' +
+      '<div style="display:flex;gap:6px">' +
+      '<button id="bgSkpdAll" type="button" style="flex:1;padding:4px;border:1px solid #cbd5e1;border-radius:6px;background:#fff;cursor:pointer">Pilih Semua</button>' +
+      '<button id="bgSkpdNone" type="button" style="flex:1;padding:4px;border:1px solid #cbd5e1;border-radius:6px;background:#fff;cursor:pointer">Hapus Semua</button>' +
+      '</div>' +
+      '<div id="bgSkpdList" style="max-height:150px;overflow:auto;display:flex;flex-direction:column;gap:2px"></div>' +
+      '</div></details>' +
+
+      '<div style="display:flex;gap:6px">' +
+      '<button id="bgStart" style="flex:1;padding:7px;border:none;border-radius:6px;background:#3b82f6;color:#fff;font-weight:600;cursor:pointer">Mulai</button>' +
+      '<button id="bgResume" style="flex:1;padding:7px;border:none;border-radius:6px;background:#64748b;color:#fff;font-weight:600;cursor:pointer">Lanjut</button>' +
+      '<button id="bgStop" style="flex:1;padding:7px;border:none;border-radius:6px;background:#dc2626;color:#fff;font-weight:600;cursor:pointer">Stop</button>' +
+      '</div>' +
+
+      '</div>' + // #bgBody
+
+      '<div id="bgLog" style="padding:8px 12px;max-height:160px;overflow:auto;white-space:pre-wrap;font-size:11px;line-height:1.5;color:#475569;flex:0 0 auto"></div>';
     document.body.appendChild(p);
+
+    const runningState = load();
+
+    // Kata kunci
+    const termsEl = p.querySelector('#bgTerms');
+    termsEl.value = (runningState?.terms || loadTerms() || DEFAULT_TERMS).join('\n');
+    termsEl.addEventListener('input', () => saveTerms(parseTerms(termsEl.value)));
+
+    // Aksi
+    const actions = runningState?.actions || loadActions() || DEFAULT_ACTIONS;
+    const subSel = p.querySelector('#bgActSub');
+    const rincianSel = p.querySelector('#bgActRincian');
+    subSel.value = actions.subKegiatan || 'buka';
+    rincianSel.value = actions.rincian || 'buka';
+    const onActionChange = () => saveActions({ subKegiatan: subSel.value, rincian: rincianSel.value });
+    subSel.addEventListener('change', onActionChange);
+    rincianSel.addEventListener('change', onActionChange);
+
+    // Dinas/SKPD
+    const skpdList = p.querySelector('#bgSkpdList');
+    const skpdCount = p.querySelector('#bgSkpdCount');
+    const allIds = SKPD.map(s => s.id);
+    // Centang ikut pilihan terakhir yang disimpan user (bukan sisa antrian yang sedang/sudah berjalan).
+    const initialSelected = loadSelected() || allIds;
+    buildSkpdList(skpdList, initialSelected);
+    const updateSkpdCount = () => {
+      const n = getChecked(skpdList).length;
+      skpdCount.textContent = `${n}/${SKPD.length}`;
+    };
+    updateSkpdCount();
+    skpdList.addEventListener('change', e => {
+      if (e.target.matches('input[type="checkbox"]')) { saveSelected(getChecked(skpdList)); updateSkpdCount(); }
+    });
+    p.querySelector('#bgSkpdAll').onclick = () => {
+      skpdList.querySelectorAll('input[type="checkbox"]').forEach(cb => { cb.checked = true; });
+      saveSelected(getChecked(skpdList)); updateSkpdCount();
+    };
+    p.querySelector('#bgSkpdNone').onclick = () => {
+      skpdList.querySelectorAll('input[type="checkbox"]').forEach(cb => { cb.checked = false; });
+      saveSelected(getChecked(skpdList)); updateSkpdCount();
+    };
+    p.querySelector('#bgSkpdFilter').addEventListener('input', e => {
+      const q = e.target.value.toLowerCase();
+      skpdList.querySelectorAll('label').forEach(row => { row.style.display = row.dataset.nama.includes(q) ? '' : 'none'; });
+    });
+
+    // Mulai / Lanjut / Stop
     p.querySelector('#bgStart').onclick = () => {
-      if (confirm('Mulai dari awal? Antrian & log sebelumnya akan direset.')) start();
+      const terms = parseTerms(termsEl.value);
+      if (!terms.length) { alert('Isi dulu nama/kata kunci Sub Kegiatan yang mau diproses.'); return; }
+
+      const act = { subKegiatan: subSel.value, rincian: rincianSel.value };
+      if (act.subKegiatan === 'lewati' && act.rincian === 'lewati') {
+        alert('Pilih minimal satu aksi: Sub Kegiatan atau Rincian Belanja (jangan "Lewati" keduanya).');
+        return;
+      }
+
+      const selectedIds = getChecked(skpdList);
+      if (!selectedIds.length) { alert('Pilih minimal satu Dinas/SKPD.'); return; }
+      const queue = SKPD.filter(s => selectedIds.includes(s.id)).map(s => s.id);
+
+      const ringkasan = `Dinas: ${queue.length} dipilih\n` +
+        `Kata kunci: ${terms.join(', ')}\n` +
+        `Sub Kegiatan: ${act.subKegiatan} | Rincian Belanja: ${act.rincian}`;
+      if (confirm(`Mulai dari awal?\n\n${ringkasan}\n\nAntrian & log sebelumnya akan direset.`)) {
+        saveTerms(terms); saveActions(act); saveSelected(selectedIds);
+        start(queue, terms, act);
+      }
     };
     p.querySelector('#bgResume').onclick = resume;
     p.querySelector('#bgStop').onclick = () => { const s = load(); if (s) { s.running = false; save(s); } log('⏹ Dihentikan.'); };
-    const s = load(); if (s?.log) p.querySelector('#bgLog').textContent = s.log.join('\n');
+
+    if (runningState?.log) p.querySelector('#bgLog').textContent = runningState.log.join('\n');
+
+    const pos = loadPos();
+    if (pos) applyPos(p, pos.left, pos.top);
+    setupDrag(p, p.querySelector('#bgHandle'));
+
     return p;
   }
 
@@ -207,8 +415,10 @@
     return t.length ? t[t.length - 1] : '';
   }
 
-  // Klik item "Buka <label>" untuk baris berkode `code`. Return: 'dibuka' | 'sudah terbuka' | 'gagal: ...'
-  async function bukaItem(term, code, label) {
+  // Klik item menu untuk baris berkode `code`, sesuai `action` ('buka' atau 'kunci'):
+  // - action 'buka' : klik "Buka <label>" kalau ada; kalau cuma ada "Kunci <label>" -> 'sudah terbuka'.
+  // - action 'kunci': klik "Kunci <label>" kalau ada; kalau cuma ada "Buka <label>"  -> 'sudah terkunci'.
+  async function bukaItem(term, code, label, action) {
     checkStop();
     await search(term);
     const row = subRows().find(r => rowCode(r) === code);
@@ -216,6 +426,19 @@
     const items = await openMenu(row);
     const buka = items.find(b => txt(b) === 'Buka ' + label);
     const kunci = items.find(b => txt(b) === 'Kunci ' + label);
+
+    if (action === 'kunci') {
+      if (kunci) {
+        checkStop();
+        kunci.click();
+        await sleep(DELAY.action);
+        return 'dikunci' + (lastToast() ? ` (${lastToast()})` : '');
+      }
+      await closeMenu();
+      return buka ? 'sudah terkunci' : 'gagal: item menu tidak ditemukan';
+    }
+
+    // default: 'buka'
     if (buka) {
       checkStop();
       buka.click();
@@ -226,22 +449,29 @@
     return kunci ? 'sudah terbuka' : 'gagal: item menu tidak ditemukan';
   }
 
-  async function processSkpd(skpd) {
-    const rules = rulesFor(skpd.nama);
-    if (!rules) { log(`⏭ ${skpd.nama}: dilewati (aturan)`); return; }
+  // Untuk tiap kata kunci: cari -> cocokkan baris yang namanya memuat kata kunci itu
+  // (case-insensitive) -> jalankan aksi (buka/kunci) yang dipilih untuk Sub Kegiatan
+  // dan/atau Rincian Belanja, di tiap baris yang cocok.
+  async function processSkpd(skpd, terms, actions) {
+    const steps = STEPS.filter(st => (actions?.[st.key] || 'lewati') !== 'lewati');
+    if (!steps.length) return;
 
-    for (const rule of rules) {
+    for (const term of terms) {
       checkStop();
-      await search(rule.search);
-      const rows = subRows().filter(r => rule.match.test(txt(r)));
-      if (rows.length === 0) { log(`⚠ ${skpd.nama}: "${rule.match.source}" tidak ditemukan`); continue; }
-      if (rows.length > MAX_ROWS) { log(`⚠ ${skpd.nama}: ${rows.length} baris cocok, terlalu banyak → dilewati`); continue; }
+      await search(term);
+      const needle = term.toLowerCase();
+      const rows = subRows().filter(r => txt(r).toLowerCase().includes(needle));
+      if (rows.length === 0) { log(`⚠ ${skpd.nama}: "${term}" tidak ditemukan`); continue; }
+      if (rows.length > MAX_ROWS) { log(`⚠ ${skpd.nama}: "${term}" cocok ${rows.length} baris, terlalu banyak → dilewati`); continue; }
 
       const targets = rows.map(r => ({ code: rowCode(r), nama: txt(r.children[1]).replace(/^[\d.]+\s*/, '').slice(0, 60) }));
       for (const t of targets) {
-        const a = await bukaItem(rule.search, t.code, 'Sub Kegiatan');
-        const b = await bukaItem(rule.search, t.code, 'Rincian Belanja');
-        log(`✔ ${skpd.nama} | ${t.code} ${t.nama}\n   Sub: ${a} | Rincian: ${b}`);
+        const results = [];
+        for (const st of steps) {
+          const res = await bukaItem(term, t.code, st.label, actions[st.key]);
+          results.push(`${st.label}: ${res}`);
+        }
+        log(`✔ ${skpd.nama} | ${t.code} ${t.nama}\n   ${results.join(' | ')}`);
       }
     }
   }
@@ -261,19 +491,22 @@
     else { s.running = false; save(s); log('🏁 Selesai semua SKPD.'); }
   }
 
-  function start() {
-    const queue = SKPD.filter(s => rulesFor(s.nama)).map(s => s.id);
-    const s = { running: true, queue, nav: null, log: [`▶ Mulai: ${queue.length} SKPD`] };
+  function start(queue, terms, actions) {
+    const s = {
+      running: true, queue: queue.slice(), nav: null, terms, actions,
+      log: [`▶ Mulai: ${queue.length} SKPD, kata kunci: ${terms.join(', ')}, Sub Kegiatan=${actions.subKegiatan}, Rincian Belanja=${actions.rincian}`],
+    };
     save(s);
-    go(s, queue[0]);
+    go(s, s.queue[0]);
   }
 
   function resume() {
     const s = load();
-    if (!s?.queue?.length) { log('Tidak ada antrian tersisa. Klik Mulai.'); return; }
+    if (!s?.queue?.length) { log('Tidak ada antrian tersisa. Atur pengaturan lalu klik Mulai.'); return; }
     s.running = true; s.nav = null;
     save(s);
-    log(`▶ Lanjut: sisa ${s.queue.length} SKPD`);
+    const actions = s.actions || DEFAULT_ACTIONS;
+    log(`▶ Lanjut: sisa ${s.queue.length} SKPD, kata kunci: ${(s.terms || DEFAULT_TERMS).join(', ')}, Sub Kegiatan=${actions.subKegiatan}, Rincian Belanja=${actions.rincian}`);
     go(s, s.queue[0]);
   }
 
@@ -307,7 +540,7 @@
 
       if (!ready) log(`⚠ ${skpd.nama}: halaman tidak siap / tidak ada sub kegiatan`);
       else {
-        try { await processSkpd(skpd); }
+        try { await processSkpd(skpd, s.terms || DEFAULT_TERMS, s.actions || DEFAULT_ACTIONS); }
         catch (e) {
           if (e instanceof Stopped) return;
           log(`✖ ${skpd.nama}: ${e.message}`);
