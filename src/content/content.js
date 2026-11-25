@@ -3,25 +3,18 @@
     const STATE_KEY = 'sipd_auto_state';
     const STATE_KEY_RKA = 'sipd_auto_state_rka';
 
-    // idDaerah/tahun diutamakan dari hasil intersep request asli SIPD-RI (storage.session),
-    // fallback ke isian manual di Pengaturan (storage.sync) kalau belum ada yang tertangkap
-    async function getIdDaerahTahun() {
-        const [session, sync] = await Promise.all([
-            new Promise(resolve => chrome.storage.session.get(['idDaerah', 'tahun'], (r) => {
-                if (chrome.runtime.lastError) resolve({});
-                else resolve(r);
-            })),
-            new Promise(resolve => chrome.storage.sync.get(['idDaerah', 'tahun'], resolve)),
-        ]);
-        return {
-            idDaerah: session.idDaerah || sync.idDaerah,
-            tahun: session.tahun || sync.tahun,
-        };
+    // idDaerah/tahun diambil service worker dari /penganggaran/v1/auth/me (pakai token Bearer yang tertangkap)
+    // force: true → selalu ambil ulang auth/me, supaya tahun ikut tahun anggaran yang sedang dipilih
+    function getIdDaerahTahun() {
+        return new Promise(resolve => chrome.runtime.sendMessage({ action: 'getAuthInfo', force: true }, (r) => {
+            if (chrome.runtime.lastError || !r) resolve({});
+            else resolve({ idDaerah: r.idDaerah, tahun: r.tahun });
+        }));
     }
 
     const PAGES = [
         {
-            pattern: /\/master\/sub_giat\b/,
+            pattern: /\/master\/sub[_-]giat\b/,
             title: 'Sub Kegiatan SIPD-RI',
             btnText: 'Ambil Semua Data Sub Kegiatan',
             action: 'fetchSubGiat',
@@ -37,7 +30,7 @@
             filename: '',
         },
         {
-            pattern: /\/master\/sumber_dana\b/,
+            pattern: /\/master\/sumber[_-]dana\b/,
             title: 'Sinkronisasi Sumber Dana',
             btnText: 'Sinkronisasi Sumber Dana ke SIPDRI',
             action: 'syncSumberDana',
@@ -61,7 +54,7 @@
             filename: '',
         },
         {
-            pattern: /(?<!\/cascading)\/(rincian|belanja|detail|jadwal|sub_giat)\b/,
+            pattern: /(?<!\/cascading)\/(rincian|belanja|detail|jadwal|sub[_-]giat)\b/,
             title: 'Automasi Sumber Dana',
             btnText: 'Mulai Automasi DAU',
             action: 'autoUpdateDAU',
@@ -524,8 +517,8 @@
                     new Promise(resolve => chrome.storage.sync.get(['localApiUrl', 'localToken'], resolve)),
                 ]);
 
-                if (!idTahun.idDaerah) {
-                    setStatus('ID Daerah belum terdeteksi — buka halaman SIPD-RI dulu, atau set manual di Pengaturan', 'err');
+                if (!idTahun.idDaerah || !Number(idTahun.tahun)) {
+                    setStatus('ID Daerah / Tahun belum terdeteksi — pastikan sudah login SIPD, lalu klik apa saja di halaman dan coba lagi', 'err');
                     return;
                 }
                 if (!saved.localApiUrl || !saved.localToken) {
@@ -535,10 +528,10 @@
 
                 const btn = $('btn-fetch');
                 btn.disabled = true;
-                setStatus('Mengambil data SKPD dari SIPD-RI...', 'loading');
+                setStatus(`Mengambil data SKPD tahun ${idTahun.tahun} dari SIPD...`, 'loading');
                 setProgress(0, 0);
 
-                const tahun = Number(idTahun.tahun) || new Date().getFullYear();
+                const tahun = Number(idTahun.tahun);
 
                 try {
                     const res = await new Promise((resolve, reject) => {
@@ -559,7 +552,10 @@
                     });
 
                     setProgress(1, 1);
-                    setStatus(`✓ ${res?.total ?? '?'} SKPD berhasil disinkronisasi`, 'ok');
+                    const detailNote = res?.detailFailed
+                        ? ` — ${res.detailFailed} detail gagal diambil (mis. ${String(res.detailErrors?.[0] || '').substring(0, 120)})`
+                        : '';
+                    setStatus(`✓ ${res?.total ?? '?'} SKPD berhasil disinkronisasi${detailNote}`, res?.detailFailed ? 'err' : 'ok');
                 } catch (err) {
                     setStatus('Error: ' + err.message, 'err');
                 } finally {
@@ -575,8 +571,8 @@
                     new Promise(resolve => chrome.storage.sync.get(['localApiUrl', 'localToken'], resolve)),
                 ]);
 
-                if (!idTahun.idDaerah) {
-                    setStatus('ID Daerah belum terdeteksi — buka halaman SIPD-RI dulu, atau set manual di Pengaturan', 'err');
+                if (!idTahun.idDaerah || !Number(idTahun.tahun)) {
+                    setStatus('ID Daerah / Tahun belum terdeteksi — pastikan sudah login SIPD, lalu klik apa saja di halaman dan coba lagi', 'err');
                     return;
                 }
                 if (!saved.localApiUrl || !saved.localToken) {
@@ -586,10 +582,10 @@
 
                 const btn = $('btn-fetch');
                 btn.disabled = true;
-                setStatus('Mengambil data Sumber Dana dari SIPD-RI...', 'loading');
+                setStatus(`Mengambil data Sumber Dana tahun ${idTahun.tahun} dari SIPD...`, 'loading');
                 setProgress(0, 0);
 
-                const tahun = Number(idTahun.tahun) || new Date().getFullYear();
+                const tahun = Number(idTahun.tahun);
 
                 try {
                     const res = await new Promise((resolve, reject) => {
@@ -626,8 +622,8 @@
                     new Promise(resolve => chrome.storage.sync.get(['localApiUrl', 'localToken'], resolve)),
                 ]);
 
-                if (!idTahun.idDaerah) {
-                    setStatus('ID Daerah belum terdeteksi — buka halaman SIPD-RI dulu, atau set manual di Pengaturan', 'err');
+                if (!idTahun.idDaerah || !Number(idTahun.tahun)) {
+                    setStatus('ID Daerah / Tahun belum terdeteksi — pastikan sudah login SIPD, lalu klik apa saja di halaman dan coba lagi', 'err');
                     return;
                 }
                 if (!saved.localApiUrl || !saved.localToken) {
@@ -637,10 +633,10 @@
 
                 const btn = $('btn-fetch');
                 btn.disabled = true;
-                setStatus('Mengambil daftar unit SKPD...', 'loading');
+                setStatus(`Mengambil daftar unit SKPD tahun ${idTahun.tahun}...`, 'loading');
                 setProgress(0, 0);
 
-                const tahun = Number(idTahun.tahun) || new Date().getFullYear();
+                const tahun = Number(idTahun.tahun);
 
                 const progressListener = (msg) => {
                     if (msg.action !== 'syncSubGiatProgress') return;
@@ -674,8 +670,11 @@
                     });
 
                     setProgress(res?.totalUnits ?? 1, res?.totalUnits ?? 1);
-                    const failNote = res?.failed ? `, ${res.failed} unit gagal` : '';
-                    setStatus(`✓ ${res?.total ?? '?'} sub kegiatan dari ${res?.totalUnits ?? '?'} unit${failNote}`, 'ok');
+                    const failNote = res?.failed
+                        ? `, ${res.failed} unit gagal${res.errors?.[0] ? ` (mis. ${res.errors[0].substring(0, 250)})` : ''}`
+                        : '';
+                    const skipNote = res?.skipped ? `, ${res.skipped} unit tanpa sub kegiatan` : '';
+                    setStatus(`✓ ${res?.total ?? '?'} sub kegiatan dari ${res?.totalUnits ?? '?'} unit${skipNote}${failNote}`, res?.failed ? 'err' : 'ok');
                 } catch (err) {
                     setStatus('Error: ' + err.message, 'err');
                 } finally {
@@ -717,22 +716,22 @@
                 });
             }
 
-            const saved = await new Promise(resolve => chrome.storage.sync.get(['idDaerah', 'tahun'], resolve));
+            const saved = await getIdDaerahTahun();
 
-            if (!saved.idDaerah) {
-                setStatus('Set ID Daerah di Pengaturan dulu', 'err');
+            if (!saved.idDaerah || !Number(saved.tahun)) {
+                setStatus('ID Daerah / Tahun belum terdeteksi — pastikan sudah login SIPD, lalu klik apa saja di halaman dan coba lagi', 'err');
                 return;
             }
 
             const btn = $('btn-fetch');
             btn.disabled = true;
-            setStatus('Memulai pengambilan data...', 'loading');
+            setStatus(`Memulai pengambilan data tahun ${saved.tahun}...`, 'loading');
             setProgress(0, 0);
 
             const PAGE_SIZE = 100;
             const baseParams = {
                 idDaerah: Number(saved.idDaerah),
-                tahun: Number(saved.tahun) || new Date().getFullYear(),
+                tahun: Number(saved.tahun),
                 search: '',
                 length: PAGE_SIZE,
             };

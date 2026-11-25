@@ -18,6 +18,18 @@ document.addEventListener('DOMContentLoaded', () => {
         }
     });
 
+    // Info akun dari /penganggaran/v1/auth/me (diambil service worker)
+    chrome.runtime.sendMessage({ action: 'getAuthInfo' }, (r) => {
+        if (chrome.runtime.lastError || !r?.idDaerah) return;
+        const set = (id, v) => { document.getElementById(id).textContent = v || '-'; };
+        set('acc-daerah', r.namaDaerah);
+        set('acc-id-daerah', r.idDaerah);
+        set('acc-tahun', r.tahun);
+        set('acc-user', r.namaUser);
+        set('acc-role', r.roleName);
+        document.getElementById('account').hidden = false;
+    });
+
     document.getElementById('btn-options').addEventListener('click', () => {
         chrome.runtime.openOptionsPage();
     });

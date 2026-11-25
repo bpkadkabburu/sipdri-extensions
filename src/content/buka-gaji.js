@@ -1,6 +1,6 @@
 /*
  * buka-gaji.js — Content script: buka/kunci massal Sub Kegiatan + Rincian Belanja
- * di SIPD-RI (Penganggaran > Sub Kegiatan Belanja), lewat klik UI (bukan API).
+ * di SIPD (Penganggaran > Sub Kegiatan Belanja), lewat API SIPD baru.
  *
  * Yang bisa diatur user di panel:
  * - Nama/kata kunci sub kegiatan (boleh lebih dari satu, satu per baris). Jadi
@@ -12,36 +12,28 @@
  * - Dinas/SKPD mana saja yang diproses (centang per dinas, ada Pilih Semua /
  *   Hapus Semua + pencarian).
  *
- * Cara kerja:
- * - Antrian SKPD + pengaturan (kata kunci, aksi) disimpan di localStorage,
- *   jadi tetap jalan walau halaman reload/pindah SKPD.
- * - Di tiap SKPD, untuk tiap kata kunci: cari kata kunci itu -> cocokkan baris
- *   sub kegiatan yang namanya memuat kata kunci -> buka menu Aksi -> klik
- *   "Buka <label>" (kalau aksinya Buka) atau "Kunci <label>" (kalau aksinya
- *   Kunci), untuk Sub Kegiatan dan/atau Rincian Belanja sesuai pilihan.
- * - HANYA mengklik item yang teksnya persis cocok ("Buka ..." / "Kunci ...").
- *   Kalau item yang dibutuhkan tidak ada (berarti sudah di status itu),
- *   dilewati & dicatat "sudah terbuka"/"sudah terkunci". Item lain tidak
- *   pernah disentuh.
+ * Cara kerja (API, tanpa pindah halaman / klik menu):
+ * - Per SKPD: GET /penganggaran/v1/belanja/perangkat-daerah/{id_skpd}/sub-kegiatan
+ *   (semua halaman) -> cocokkan sub kegiatan yang namanya memuat kata kunci.
+ * - Per sub kegiatan cocok: kirim ke /penganggaran/v1/belanja/sub-kegiatan/{id}/kunci
+ *     Sub Kegiatan    -> { kunci_bl: 1 | 0 }        (1 = kunci, 0 = buka)
+ *     Rincian Belanja -> { kunci_bl_rinci: 1 | 0 }
+ *   Kalau data baris sudah menunjukkan status yang sama, dilewati & dicatat
+ *   "sudah terbuka"/"sudah terkunci".
  * - Kalau hasil cocok 0 atau terlalu banyak (> MAX_ROWS), kata kunci itu (untuk
- *   SKPD tersebut) dilewati & dicatat di log — jadi SKPD yang memang tidak
- *   punya sub kegiatan itu otomatis terlewat tanpa perlu daftar pengecualian
- *   manual.
- *
- * Penyesuaian untuk ekstensi:
- * - Panel bisa digeser (drag) seperti widget automasi lain di extension ini;
- *   posisi & semua pengaturan terakhir diingat di localStorage.
- * - Panel hanya tampil di halaman cascading/belanja (ikut navigasi SPA Angular).
- * - Kalau sedang jalan tapi bukan di halaman belanja (mis. terlempar ke login), antrian
- *   dijeda — tidak redirect terus-menerus. Buka lagi halaman belanja lalu klik "Lanjut".
- * - Kalau sudah 2x diarahkan ke id_skpd yang sama tapi URL tidak pernah cocok,
- *   SKPD itu dilewati & dicatat supaya antrian tetap jalan ke dinas berikutnya.
- * - Tombol Stop berlaku di tengah SKPD (dicek sebelum tiap klik).
+ *   SKPD tersebut) dilewati & dicatat di log.
+ * - Antrian SKPD + pengaturan disimpan di localStorage; kalau halaman reload saat
+ *   berjalan, antrian dilanjutkan otomatis. Tombol Stop dicek sebelum tiap request.
+ * - Panel bisa digeser (drag); posisi & pengaturan terakhir diingat.
  */
 (() => {
   'use strict';
 
-  const BASE = 'https://sipd-ri.kemendagri.go.id/penganggaran/anggaran/cascading/belanja?id_skpd=';
+  // Endpoint API SIPD baru
+  const API = {
+    subKegiatanSkpd: id => `/penganggaran/v1/belanja/perangkat-daerah/${encodeURIComponent(id)}/sub-kegiatan`,
+    kunci: idSubBl => `/penganggaran/v1/belanja/sub-kegiatan/${encodeURIComponent(idSubBl)}/kunci`,
+  };
   const PAGE_RE = /\/penganggaran\/anggaran\/cascading\/belanja\b/;
   const KEY = 'bukaGaji_state_v3';            // v3: nambah field `actions` (buka/kunci) & queue dari pilihan dinas
   const TERMS_KEY = 'bukaGaji_terms_v1';      // kata kunci terakhir, diingat lepas dari status antrian
@@ -49,13 +41,13 @@
   const SELECTED_KEY = 'bukaGaji_selected_v1'; // id SKPD yang dicentang terakhir
   const POS_KEY = 'bukaGaji_pos_v1';          // posisi panel (hasil drag)
   const MAX_ROWS = 3;          // pengaman: jangan proses massal kalau hasil cocok aneh-aneh
-  const MAX_NAV = 2;           // maksimal redirect ke id_skpd yang sama sebelum dilewati
-  const DELAY = { short: 600, action: 2200, search: 2500, pageReady: 1500 };
+  const DELAY = { action: 300 }; // jeda antar request kunci/buka supaya tidak membanjiri server
   const DEFAULT_TERMS = ['gaji'];
   const DEFAULT_ACTIONS = { subKegiatan: 'buka', rincian: 'buka' };
+  // field = nama field payload & status di data baris
   const STEPS = [
-    { key: 'subKegiatan', label: 'Sub Kegiatan' },
-    { key: 'rincian', label: 'Rincian Belanja' },
+    { key: 'subKegiatan', label: 'Sub Kegiatan', field: 'kunci_bl' },
+    { key: 'rincian', label: 'Rincian Belanja', field: 'kunci_bl_rinci' },
   ];
 
   // Daftar SKPD Kab. Buru TA 2027 (id_skpd | nama). Tambah/hapus sesuai kebutuhan.
@@ -130,19 +122,10 @@
 
   // ---------- Util ----------
   const sleep = ms => new Promise(r => setTimeout(r, ms));
-  const txt = el => (el?.innerText || '').replace(/\s+/g, ' ').trim();
-  const visible = el => !!el && el.offsetParent !== null;
   const onPage = () => PAGE_RE.test(location.pathname);
-
-  async function waitFor(fn, timeout = 20000, step = 300) {
-    const t0 = Date.now();
-    while (Date.now() - t0 < timeout) { const v = fn(); if (v) return v; await sleep(step); }
-    return null;
-  }
 
   const load = () => { try { return JSON.parse(localStorage.getItem(KEY)) || null; } catch { return null; } };
   const save = s => localStorage.setItem(KEY, JSON.stringify(s));
-  const currentId = () => new URLSearchParams(location.search).get('id_skpd');
 
   // Kata kunci sub kegiatan: satu per baris, trim, buang yang kosong/duplikat.
   function parseTerms(str) {
@@ -382,174 +365,166 @@
     console.log('[BukaGaji]', msg);
   }
 
-  // ---------- Aksi di halaman ----------
-  async function search(term) {
-    const inp = document.querySelector('input[placeholder="Pencarian"]');
-    if (!inp) throw new Error('Kotak pencarian tidak ditemukan');
-    inp.value = term;
-    inp.dispatchEvent(new Event('input', { bubbles: true }));
-    inp.dispatchEvent(new KeyboardEvent('keyup', { key: 'Enter', code: 'Enter', keyCode: 13, bubbles: true }));
-    await sleep(DELAY.search);
+  // ---------- API SIPD ----------
+  // Token Bearer ditangkap service worker dari request asli SIPD (storage.session)
+  async function getToken() {
+    const r = await new Promise(resolve => chrome.storage.session.get(['accessToken'], v => {
+      resolve(chrome.runtime.lastError ? {} : v);
+    }));
+    if (!r.accessToken) throw new Error('Token belum tersedia — klik apa saja di halaman SIPD dulu, lalu Lanjut');
+    return r.accessToken;
   }
 
-  // Baris sub kegiatan = <tr> yang punya kode sub kegiatan (x.xx.xx.x.xx.xxxx) + tombol Aksi
-  const rowCode = r => (txt(r).match(/\d+\.\d+\.\d+\.\d\.\d+\.\d+/) || [])[0];
-  const subRows = () => [...document.querySelectorAll('tbody tr')]
-    .filter(r => rowCode(r) && r.querySelector('button[ngbdropdowntoggle]'));
-
-  async function openMenu(row) {
-    row.querySelector('button[ngbdropdowntoggle]').click();
-    await sleep(DELAY.short);
-    // container="body" -> menu dipindah ke <body> saat terbuka
-    return [...document.querySelectorAll('button.dropdown-item')].filter(visible);
+  async function api(path, { method = 'GET', query, body } = {}) {
+    const u = new URL(path, location.origin);
+    for (const [k, v] of Object.entries(query || {})) u.searchParams.set(k, String(v));
+    const headers = { Authorization: await getToken(), Accept: 'application/json' };
+    if (body !== undefined) headers['Content-Type'] = 'application/json';
+    const res = await fetch(u.toString(), { method, headers, body: body !== undefined ? JSON.stringify(body) : undefined });
+    const text = await res.text().catch(() => '');
+    let json = null;
+    try { json = text ? JSON.parse(text) : null; } catch { /* bukan JSON */ }
+    return { ok: res.ok, status: res.status, json, text };
   }
 
-  async function closeMenu() {
-    document.body.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
-    document.body.click();
-    await sleep(300);
-  }
+  const apiMsg = r => (r.json?.message || r.json?.msg || r.text || '').toString().replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 120);
 
-  function lastToast() {
-    const t = [...document.querySelectorAll('[class*="toast"], .swal2-popup')].map(txt).filter(Boolean);
-    return t.length ? t[t.length - 1] : '';
-  }
-
-  // Klik item menu untuk baris berkode `code`, sesuai `action` ('buka' atau 'kunci'):
-  // - action 'buka' : klik "Buka <label>" kalau ada; kalau cuma ada "Kunci <label>" -> 'sudah terbuka'.
-  // - action 'kunci': klik "Kunci <label>" kalau ada; kalau cuma ada "Buka <label>"  -> 'sudah terkunci'.
-  async function bukaItem(term, code, label, action) {
-    checkStop();
-    await search(term);
-    const row = subRows().find(r => rowCode(r) === code);
-    if (!row) return 'gagal: baris hilang setelah dicari ulang';
-    const items = await openMenu(row);
-    const buka = items.find(b => txt(b) === 'Buka ' + label);
-    const kunci = items.find(b => txt(b) === 'Kunci ' + label);
-
-    if (action === 'kunci') {
-      if (kunci) {
-        checkStop();
-        kunci.click();
-        await sleep(DELAY.action);
-        return 'dikunci' + (lastToast() ? ` (${lastToast()})` : '');
-      }
-      await closeMenu();
-      return buka ? 'sudah terkunci' : 'gagal: item menu tidak ditemukan';
-    }
-
-    // default: 'buka'
-    if (buka) {
+  // GET semua halaman (?page=N&limit=M); bentuk respon dicoba beberapa kemungkinan
+  async function getAll(path, query = {}) {
+    const LIMIT = 100, MAX_PAGES = 200;
+    const all = [];
+    let prevFirst = null;
+    for (let page = 1; page <= MAX_PAGES; page++) {
       checkStop();
-      buka.click();
-      await sleep(DELAY.action);
-      return 'dibuka' + (lastToast() ? ` (${lastToast()})` : '');
+      const r = await api(path, { query: { ...query, page, limit: LIMIT } });
+      if (!r.ok) throw new Error(`HTTP ${r.status}: ${apiMsg(r)}`);
+      const j = r.json;
+      const rows = [j?.data, j?.data?.items, j?.data?.data, j?.data?.rows, j?.data?.list, j?.items, j?.rows].find(Array.isArray) || [];
+      if (!rows.length) break;
+      const first = JSON.stringify(rows[0]);
+      if (first === prevFirst) break;              // server mengabaikan page
+      prevFirst = first;
+      all.push(...rows);
+      const m = j?.meta || j?.data?.meta || j?.pagination || j?.data?.pagination || j?.data || j || {};
+      const t = Number(m.total ?? m.total_data ?? m.totalItems ?? m.total_items ?? m.recordsTotal);
+      if (Number.isFinite(t) && all.length >= t) break;
+      if (!Number.isFinite(t) && rows.length < LIMIT) break;
     }
-    await closeMenu();
-    return kunci ? 'sudah terbuka' : 'gagal: item menu tidak ditemukan';
+    return all;
   }
 
-  // Untuk tiap kata kunci: cari -> cocokkan baris yang namanya memuat kata kunci itu
+  // Ambil id / kode / nama dari baris sub kegiatan (nama field API baru belum pasti)
+  const rowId = r => r.id_sub_bl ?? r.id ?? r.id_sub_kegiatan;
+  const rowKode = r => r.kode_sub_giat ?? r.kode_sub_kegiatan ?? r.kode ?? '';
+  const rowNama = r => String(r.nama_sub_giat ?? r.nama_sub_kegiatan ?? r.nama ?? '').replace(/^[\d.]+\s*/, '');
+
+  // Mode HTTP endpoint kunci belum pasti → coba berurutan, ingat yang berhasil
+  let kunciMethod = null;
+  async function setKunci(idSubBl, field, value) {
+    const methods = kunciMethod ? [kunciMethod] : ['PUT', 'PATCH', 'POST'];
+    let last;
+    for (const method of methods) {
+      last = await api(API.kunci(idSubBl), { method, body: { [field]: value } });
+      if (last.status === 405 || (last.status === 404 && !kunciMethod && method !== methods[methods.length - 1])) continue;
+      if (last.ok) kunciMethod = method;
+      break;
+    }
+    return last;
+  }
+
+  // Jalankan aksi ('buka' | 'kunci') untuk satu step (Sub Kegiatan / Rincian) pada satu baris
+  async function applyStep(row, step, action) {
+    checkStop();
+    const value = action === 'kunci' ? 1 : 0;
+    const cur = row[step.field];
+    if (cur !== undefined && cur !== null && Number(cur) === value) {
+      return action === 'kunci' ? 'sudah terkunci' : 'sudah terbuka';
+    }
+    const r = await setKunci(rowId(row), step.field, value);
+    await sleep(DELAY.action);
+    if (!r.ok) return `gagal: HTTP ${r.status}${apiMsg(r) ? ' ' + apiMsg(r) : ''}`;
+    const msg = apiMsg(r);
+    return (action === 'kunci' ? 'dikunci' : 'dibuka') + (msg ? ` (${msg})` : '');
+  }
+
+  // Untuk tiap kata kunci: cocokkan sub kegiatan yang namanya memuat kata kunci itu
   // (case-insensitive) -> jalankan aksi (buka/kunci) yang dipilih untuk Sub Kegiatan
   // dan/atau Rincian Belanja, di tiap baris yang cocok.
   async function processSkpd(skpd, terms, actions) {
     const steps = STEPS.filter(st => (actions?.[st.key] || 'lewati') !== 'lewati');
     if (!steps.length) return;
 
+    const all = await getAll(API.subKegiatanSkpd(skpd.id));
+    if (!all.length) { log(`⚠ ${skpd.nama}: tidak ada sub kegiatan`); return; }
+
     for (const term of terms) {
       checkStop();
-      await search(term);
       const needle = term.toLowerCase();
-      const rows = subRows().filter(r => txt(r).toLowerCase().includes(needle));
+      const rows = all.filter(r => `${rowKode(r)} ${rowNama(r)}`.toLowerCase().includes(needle));
       if (rows.length === 0) { log(`⚠ ${skpd.nama}: "${term}" tidak ditemukan`); continue; }
       if (rows.length > MAX_ROWS) { log(`⚠ ${skpd.nama}: "${term}" cocok ${rows.length} baris, terlalu banyak → dilewati`); continue; }
 
-      const targets = rows.map(r => ({ code: rowCode(r), nama: txt(r.children[1]).replace(/^[\d.]+\s*/, '').slice(0, 60) }));
-      for (const t of targets) {
+      for (const row of rows) {
+        if (rowId(row) == null) { log(`✖ ${skpd.nama} | ${rowNama(row).slice(0, 60)}: id sub kegiatan tidak ditemukan di data`); continue; }
         const results = [];
         for (const st of steps) {
-          const res = await bukaItem(term, t.code, st.label, actions[st.key]);
-          results.push(`${st.label}: ${res}`);
+          results.push(`${st.label}: ${await applyStep(row, st, actions[st.key])}`);
         }
-        log(`✔ ${skpd.nama} | ${t.code} ${t.nama}\n   ${results.join(' | ')}`);
+        log(`✔ ${skpd.nama} | ${rowKode(row)} ${rowNama(row).slice(0, 60)}\n   ${results.join(' | ')}`);
       }
     }
   }
 
   // ---------- Alur antrian ----------
-  function go(s, id) {
-    s.nav = s.nav?.id === id ? { id, n: s.nav.n + 1 } : { id, n: 1 };
-    save(s);
-    location.href = BASE + id;
-  }
-
-  function nextSkpd(s) {
-    s.queue.shift();
-    s.nav = null;
-    save(s);
-    if (s.queue.length) go(s, s.queue[0]);
-    else { s.running = false; save(s); log('🏁 Selesai semua SKPD.'); }
-  }
-
   function start(queue, terms, actions) {
     const s = {
-      running: true, queue: queue.slice(), nav: null, terms, actions,
+      running: true, queue: queue.slice(), terms, actions,
       log: [`▶ Mulai: ${queue.length} SKPD, kata kunci: ${terms.join(', ')}, Sub Kegiatan=${actions.subKegiatan}, Rincian Belanja=${actions.rincian}`],
     };
     save(s);
-    go(s, s.queue[0]);
+    run();
   }
 
   function resume() {
     const s = load();
     if (!s?.queue?.length) { log('Tidak ada antrian tersisa. Atur pengaturan lalu klik Mulai.'); return; }
-    s.running = true; s.nav = null;
+    s.running = true;
     save(s);
     const actions = s.actions || DEFAULT_ACTIONS;
     log(`▶ Lanjut: sisa ${s.queue.length} SKPD, kata kunci: ${(s.terms || DEFAULT_TERMS).join(', ')}, Sub Kegiatan=${actions.subKegiatan}, Rincian Belanja=${actions.rincian}`);
-    go(s, s.queue[0]);
+    run();
   }
 
   let busy = false;
-  async function tick() {
+  async function run() {
     if (busy) return;
-    const s = load();
-    if (!s?.running || !s.queue?.length) return;
-
-    // Bukan di halaman belanja (mis. sesi habis -> login): jeda, jangan redirect terus.
-    if (!onPage()) {
-      s.running = false; save(s);
-      log(`⏸ Dijeda: bukan di halaman Sub Kegiatan Belanja (${location.pathname}). Login/buka halamannya lalu klik "Lanjut".`);
-      return;
-    }
-
-    const id = s.queue[0];
-    const skpd = SKPD.find(x => x.id === id) || { id, nama: 'id_skpd ' + id };
-    if (currentId() !== id) {
-      if ((s.nav?.id === id ? s.nav.n : 0) >= MAX_NAV) {
-        log(`⚠ ${skpd.nama}: halaman tidak bisa dibuka (id_skpd di URL tidak cocok) → dilewati`);
-        nextSkpd(s);
-      } else go(s, id);
-      return;
-    }
-
     busy = true;
     try {
-      const ready = await waitFor(() => document.querySelector('input[placeholder="Pencarian"]') && subRows().length);
-      await sleep(DELAY.pageReady);
+      while (true) {
+        const s = load();
+        if (!s?.running) return;
+        if (!s.queue?.length) { s.running = false; save(s); log('🏁 Selesai semua SKPD.'); return; }
 
-      if (!ready) log(`⚠ ${skpd.nama}: halaman tidak siap / tidak ada sub kegiatan`);
-      else {
-        try { await processSkpd(skpd, s.terms || DEFAULT_TERMS, s.actions || DEFAULT_ACTIONS); }
-        catch (e) {
+        const id = s.queue[0];
+        const skpd = SKPD.find(x => x.id === id) || { id, nama: 'id_skpd ' + id };
+        try {
+          await processSkpd(skpd, s.terms || DEFAULT_TERMS, s.actions || DEFAULT_ACTIONS);
+        } catch (e) {
           if (e instanceof Stopped) return;
           log(`✖ ${skpd.nama}: ${e.message}`);
+          // token habis/tidak ada → jeda supaya tidak menghabiskan antrian dengan error
+          if (/Token belum tersedia|HTTP 401|HTTP 403/.test(e.message)) {
+            const s3 = load(); if (s3) { s3.running = false; save(s3); }
+            log('⏸ Dijeda: sesi/token bermasalah. Login ulang / klik di halaman SIPD, lalu klik "Lanjut".');
+            return;
+          }
         }
-      }
 
-      const s2 = load();
-      if (!s2?.running) return;                       // ditekan Stop saat proses
-      nextSkpd(s2);
+        const s2 = load();
+        if (!s2?.running) return;                     // ditekan Stop saat proses
+        s2.queue.shift();
+        save(s2);
+      }
     } finally {
       busy = false;
     }
@@ -565,7 +540,7 @@
   function init() {
     syncPanel();
     setInterval(syncPanel, 1000);
-    tick();
+    run();   // lanjutkan otomatis kalau halaman reload saat antrian berjalan
   }
 
   if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', init);

@@ -55,6 +55,18 @@
         }
         .info b { color: #e2e8f0; }
 
+        .account {
+            background: #1e293b;
+            border-radius: 7px;
+            padding: 10px 12px;
+            margin-bottom: 12px;
+            font-size: 12px;
+        }
+        .account[hidden] { display: none; }
+        .account .row { display: flex; justify-content: space-between; gap: 8px; padding: 2px 0; }
+        .account .k { color: #64748b; flex-shrink: 0; }
+        .account .v { color: #e2e8f0; text-align: right; word-break: break-word; }
+
         button {
             width: 100%;
             padding: 9px;
@@ -75,6 +87,14 @@
     <div id="token-status" class="token-status">
         <div class="dot" id="token-dot"></div>
         <span id="token-text">Memeriksa token...</span>
+    </div>
+
+    <div id="account" class="account" hidden>
+        <div class="row"><span class="k">Daerah</span><span class="v" id="acc-daerah">-</span></div>
+        <div class="row"><span class="k">ID Daerah</span><span class="v" id="acc-id-daerah">-</span></div>
+        <div class="row"><span class="k">Tahun</span><span class="v" id="acc-tahun">-</span></div>
+        <div class="row"><span class="k">User</span><span class="v" id="acc-user">-</span></div>
+        <div class="row"><span class="k">Role</span><span class="v" id="acc-role">-</span></div>
     </div>
 
     <div class="info">

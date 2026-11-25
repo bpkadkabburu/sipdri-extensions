@@ -1,8 +1,7 @@
 document.addEventListener('DOMContentLoaded', async () => {
-    const saved = await chrome.storage.sync.get(['idDaerah', 'tahun', 'speedMultiplier', 'fundRules', 'localApiUrl', 'localToken']);
-
-    if (saved.idDaerah) document.getElementById('idDaerah').value = saved.idDaerah;
-    if (saved.tahun) document.getElementById('tahun').value = saved.tahun;
+    const saved = await chrome.storage.sync.get(['speedMultiplier', 'fundRules', 'localApiUrl', 'localToken']);
+    // Sisa isian manual versi lama sudah tidak dipakai
+    chrome.storage.sync.remove(['idDaerah', 'tahun']);
     if (saved.speedMultiplier) document.getElementById('speedMultiplier').value = saved.speedMultiplier;
     if (saved.localApiUrl) document.getElementById('localApiUrl').value = saved.localApiUrl;
     if (saved.localToken) document.getElementById('localToken').value = saved.localToken;
@@ -94,8 +93,6 @@ document.addEventListener('DOMContentLoaded', async () => {
         });
 
         const data = {
-            idDaerah: document.getElementById('idDaerah').value.trim(),
-            tahun: document.getElementById('tahun').value.trim(),
             speedMultiplier: document.getElementById('speedMultiplier').value,
             fundRules: fundRules,
             localApiUrl: document.getElementById('localApiUrl').value.trim(),
